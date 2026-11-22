@@ -1,5 +1,11 @@
 # MonoPilot AI
 
+[![MonoPilot AI CI](https://github.com/Demetriusnow/monopilot-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Demetriusnow/monopilot-ai/actions/workflows/ci.yml)
+![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
+![Gemini API](https://img.shields.io/badge/Gemini-Interactions%20API-4285F4?logo=google&logoColor=white)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Demetriusnow/monopilot-ai)
+
 > **English Summary for Reviewers:** MonoPilot AI is a production-structured fintech analytics copilot built with **FastAPI**, **SQLite**, **Monobank Open API**, and **Gemini 3.8 Flash (`google-genai` Interactions API)**. Every monetary figure, subscription calculation, anomaly flag, and budget projection returned by the AI agent is grounded in deterministic Python/SQL tools and exposed in the UI via a collapsible **Tool Trace & SQL Inspector** (`🔍 Під капотом`), ensuring zero arithmetic hallucination. Works out-of-the-box in Demo Mode (zero API keys required) and seamlessly upgrades to live Monobank statements and Gemini tool-calling via `sessionStorage` or `.env`.
 
 ---
@@ -13,6 +19,16 @@
 - LLM **ніколи не виконує арифметику «в голові»** — усі підрахунки виконуються детермінованими інструментами Python та SQL-агрегаціями над SQLite.
 - Під кожною відповіддю агента користувач бачить інтерактивний блок **«🔍 Під капотом (Tool Calls & SQL)»** із точними викликами інструментів, параметрами, часом виконання в `ms` та реальним SQL-запитом.
 - Проєкт запускається **з нуля без жодних API-ключів** (детермінований 90-денний український Demo-датасет + локальний аналітичний fallback) і миттєво перемикається на реальний **Monobank X-Token** та **Gemini API Key** (які зберігаються лише в `sessionStorage` браузера або `.env`).
+
+---
+
+## Скріншоти інтерфейсу
+
+### Дашборд витрат, графіки, підписки, аномалії та живий курс валют
+![Дашборд витрат MonoPilot AI](docs/screenshots/dashboard-overview.png)
+
+### Інтерактивні бюджети, таблиця транзакцій та інспектор Tool Calls & SQL (`🔍 Під капотом`)
+![Відповідь AI-агента та інспектор SQL у MonoPilot AI](docs/screenshots/ai-sql-inspector.png)
 
 ---
 
@@ -159,9 +175,9 @@ docker compose up --build
 
 ### 3. 1-Click Cloud Deploy на Render.com
 
-Репозиторій містить [`render.yaml`](render.yaml) (`runtime: docker`, free plan, healthcheck `/api/health`):
-1. Запуште репозиторій на GitHub.
-2. У панелі Render.com оберіть **New -> Blueprint**, вкажіть репозиторій та додайте опціональний `GEMINI_API_KEY`.
+Репозиторій містить [`render.yaml`](render.yaml) (`runtime: docker`, free plan, динамічний `$PORT`, healthcheck `/api/health`):
+1. Натисніть **[Deploy to Render](https://render.com/deploy?repo=https://github.com/Demetriusnow/monopilot-ai)** або у панелі Render.com оберіть **New -> Blueprint** і вкажіть цей репозиторій.
+2. Додайте опціональну змінну `GEMINI_API_KEY` (або користувачі зможуть вводити власні ключі через UI в `sessionStorage`).
 
 ### 4. Запуск тестів
 

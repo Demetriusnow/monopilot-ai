@@ -3,8 +3,11 @@ services:
     name: monopilot-ai
     runtime: docker
     plan: free
+    autoDeploy: true
     healthCheckPath: /api/health
     envVars:
+      - key: PORT
+        value: "8000"
       - key: DATABASE_PATH
         value: /tmp/monopilot.db
       - key: GEMINI_MODEL
