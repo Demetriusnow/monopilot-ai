@@ -1,0 +1,1 @@
+"""MonoPilot AI application package."""
