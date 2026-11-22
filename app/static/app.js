@@ -25,8 +25,11 @@
     over_budget: { text: "Перевищення", cls: "status-over-budget" },
   };
 
+  const VALID_TABS = new Set(["home", "analytics", "budgets", "chat"]);
+
   const state = {
     days: 30,
+    mobileTab: "home",
     health: null,
     dashboard: null,
     budgets: [],
@@ -34,6 +37,7 @@
     isSending: false,
     categoriesChart: null,
     dailyChart: null,
+    deferredInstallPrompt: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -64,9 +68,6 @@
     setSessionKey(SESSION_KEYS.MONO, "");
   }
 
-  /**
-   * Escape HTML entities strictly before any markdown or DOM formatting.
-   */
   function escapeHtml(value) {
     if (value === null || value === undefined) return "";
     return String(value)
@@ -104,12 +105,6 @@
     }
   }
 
-  /**
-   * XSS-safe markdown renderer:
-   * 1. Escapes HTML entities across the entire raw string first.
-   * 2. Isolates fenced code blocks and inline code with null-byte tokens.
-   * 3. Converts **bold**, headings, and bullet/numbered lists safely.
-   */
   function renderMarkdownSafe(rawText) {
     const escaped = escapeHtml(rawText || "");
     const codeBlocks = [];
@@ -159,8 +154,7 @@
     };
 
     for (let i = 0; i < lines.length; i += 1) {
-      const rawLine = lines[i];
-      const trimmed = rawLine.trim();
+      const trimmed = lines[i].trim();
 
       if (!trimmed) {
         flushParagraph();
@@ -281,6 +275,27 @@
     return payload;
   }
 
+  function setMobileTab(tabName) {
+    const nextTab = VALID_TABS.has(tabName) ? tabName : "home";
+    state.mobileTab = nextTab;
+    document.body.dataset.mobileTab = nextTab;
+
+    document.querySelectorAll(".mobile-nav-item").forEach((item) => {
+      const isActive = item.getAttribute("data-tab") === nextTab;
+      item.classList.toggle("active", isActive);
+    });
+
+    if (nextTab === "analytics") {
+      window.requestAnimationFrame(() => {
+        if (state.dashboard) {
+          renderCategoriesChart(state.dashboard.categories);
+          renderDailyChart(state.dashboard.daily_series);
+        }
+      });
+    }
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+
   function updateHeaderStatus() {
     const modePill = $("mode-pill");
     const aiPill = $("ai-pill");
@@ -365,6 +380,28 @@
     $("kpi-forecast-sub").textContent =
       `Ліміт ${formatNumber(forecast.total_monthly_budget_uah, 0)} ₴ · ${formatNumber(forecast.safe_daily_allowance_uah, 0)} ₴/день`;
 
+    // Virtual monobank Black Card Hero bindings
+    const heroBalance = $("hero-balance-val");
+    if (heroBalance) heroBalance.textContent = formatUAH(data.current_balance_uah);
+    const heroNet = $("hero-net-pill");
+    if (heroNet) heroNet.textContent = `Нетто: ${formatUAH(netVal, true)}`;
+    const heroCashback = $("hero-cashback-pill");
+    if (heroCashback) heroCashback.textContent = `Кешбек: +${formatUAH(data.total_cashback_uah)}`;
+    const heroMode = $("hero-card-mode");
+    if (heroMode) {
+      heroMode.textContent =
+        data.mode === "monobank" ? "LIVE" : data.mode === "csv" ? "CSV" : "DEMO";
+    }
+
+    const budgetSummaryStrip = $("budget-summary-strip");
+    if (budgetSummaryStrip) {
+      budgetSummaryStrip.innerHTML = `
+        <span class="mono-num">Місяць: <strong>${escapeHtml(forecast.current_month || "—")}</strong> (день ${forecast.days_elapsed ?? 0} з ${forecast.days_in_month ?? 30})</span>
+        <span class="mono-num">Витрачено: <strong>${formatUAH(forecast.spent_so_far_uah)}</strong> · Темп: <strong>${formatNumber(forecast.daily_burn_rate_uah, 0)} ₴/день</strong></span>
+        <span class="mono-num">Прогноз: <strong>${formatUAH(forecast.projected_month_total_uah)}</strong></span>
+      `;
+    }
+
     const modeLabel =
       data.mode === "monobank"
         ? "Monobank Live"
@@ -372,7 +409,7 @@
           ? "CSV Import"
           : "Demo";
     $("dashboard-meta").textContent =
-      `Режим: ${modeLabel} · ${data.total_transactions} операцій за останні ${data.period_days} днів`;
+      `Режим: ${modeLabel} · ${data.total_transactions} операцій за останні ${data.period_days} дн.`;
   }
 
   function renderCategoriesChart(categories) {
@@ -420,7 +457,7 @@
           {
             data: topItems.map((c) => Number(c.total_uah || 0)),
             backgroundColor: topItems.map((_, idx) => CHART_PALETTE[idx % CHART_PALETTE.length]),
-            borderColor: "#141821",
+            borderColor: "#11151e",
             borderWidth: 2,
             hoverOffset: 6,
           },
@@ -429,20 +466,20 @@
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: "64%",
+        cutout: "65%",
         plugins: {
           legend: {
-            position: "right",
+            position: window.innerWidth <= 540 ? "bottom" : "right",
             labels: {
               color: "#cbd5e1",
-              boxWidth: 11,
-              padding: 10,
+              boxWidth: 10,
+              padding: 9,
               font: { size: 11, family: "Inter, sans-serif" },
             },
           },
           tooltip: {
-            backgroundColor: "#0b0d12",
-            borderColor: "rgba(255,255,255,0.12)",
+            backgroundColor: "#07090d",
+            borderColor: "rgba(255,255,255,0.14)",
             borderWidth: 1,
             callbacks: {
               label: (item) => {
@@ -503,7 +540,7 @@
           {
             label: "Доходи",
             data: list.map((d) => Number(d.income_uah || 0)),
-            backgroundColor: "rgba(34, 197, 94, 0.8)",
+            backgroundColor: "rgba(34, 197, 94, 0.82)",
             borderRadius: 4,
             maxBarThickness: 18,
           },
@@ -518,13 +555,13 @@
         },
         scales: {
           x: {
-            ticks: { color: "#9aa4b2", font: { size: 10, family: "JetBrains Mono, monospace" } },
+            ticks: { color: "#98a3b3", font: { size: 10, family: "JetBrains Mono, monospace" } },
             grid: { display: false },
           },
           y: {
             beginAtZero: true,
             ticks: {
-              color: "#9aa4b2",
+              color: "#98a3b3",
               font: { size: 10, family: "JetBrains Mono, monospace" },
               callback: (val) => `${val} ₴`,
             },
@@ -535,13 +572,13 @@
           legend: {
             labels: {
               color: "#cbd5e1",
-              boxWidth: 11,
+              boxWidth: 10,
               font: { size: 11, family: "Inter, sans-serif" },
             },
           },
           tooltip: {
-            backgroundColor: "#0b0d12",
-            borderColor: "rgba(255,255,255,0.12)",
+            backgroundColor: "#07090d",
+            borderColor: "rgba(255,255,255,0.14)",
             borderWidth: 1,
             callbacks: {
               label: (ctxItem) => ` ${ctxItem.dataset.label}: ${formatUAH(ctxItem.raw)}`,
@@ -657,32 +694,6 @@
       .join("");
   }
 
-  async function loadHealth() {
-    try {
-      state.health = await apiRequest("/api/health");
-      updateHeaderStatus();
-    } catch (err) {
-      showToast(`Помилка health-check: ${err.message}`, "err");
-    }
-  }
-
-  async function loadDashboard() {
-    try {
-      const data = await apiRequest(`/api/dashboard?days=${encodeURIComponent(state.days)}`);
-      state.dashboard = data;
-      updateHeaderStatus();
-      renderCurrencyTicker(data.currency_rates);
-      renderKpis(data);
-      renderCategoriesChart(data.categories);
-      renderDailyChart(data.daily_series);
-      renderSubscriptions(data.subscriptions);
-      renderAnomalies(data.anomalies);
-      renderBudgets();
-    } catch (err) {
-      showToast(`Не вдалося оновити дашборд: ${err.message}`, "err");
-    }
-  }
-
   function renderBudgets() {
     const container = $("budgets-grid");
     const totalChip = $("budgets-total-chip");
@@ -754,6 +765,32 @@
       .join("");
   }
 
+  async function loadHealth() {
+    try {
+      state.health = await apiRequest("/api/health");
+      updateHeaderStatus();
+    } catch (err) {
+      showToast(`Помилка health-check: ${err.message}`, "err");
+    }
+  }
+
+  async function loadDashboard() {
+    try {
+      const data = await apiRequest(`/api/dashboard?days=${encodeURIComponent(state.days)}`);
+      state.dashboard = data;
+      updateHeaderStatus();
+      renderCurrencyTicker(data.currency_rates);
+      renderKpis(data);
+      renderCategoriesChart(data.categories);
+      renderDailyChart(data.daily_series);
+      renderSubscriptions(data.subscriptions);
+      renderAnomalies(data.anomalies);
+      renderBudgets();
+    } catch (err) {
+      showToast(`Не вдалося оновити дашборд: ${err.message}`, "err");
+    }
+  }
+
   async function loadBudgets() {
     try {
       state.budgets = await apiRequest("/api/budgets");
@@ -817,7 +854,12 @@
               const sqlSection = trace.sql_query
                 ? `
                   <div>
-                    <div class="trace-section-label">SQL-запит (Read-Only):</div>
+                    <div class="trace-sql-header">
+                      <span class="trace-section-label">SQL-запит (Read-Only):</span>
+                      <button type="button" class="btn btn-ghost btn-sm copy-sql-btn" data-sql="${escapeHtml(trace.sql_query)}">
+                        Копіювати SQL
+                      </button>
+                    </div>
                     <pre class="trace-sql"><code>${escapeHtml(trace.sql_query)}</code></pre>
                   </div>
                 `
@@ -1008,13 +1050,20 @@
     box.className = `modal-feedback ${isError ? "err" : "ok"}`;
   }
 
-  function openKeysModal() {
+  function openKeysModal(focusTargetId = null) {
     const modal = $("keys-modal");
     if (!modal) return;
     $("gemini-key-input").value = getSessionKey(SESSION_KEYS.GEMINI);
     $("mono-token-input").value = getSessionKey(SESSION_KEYS.MONO);
     setModalFeedback("");
     modal.hidden = false;
+    if (focusTargetId) {
+      const targetEl = $(focusTargetId);
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        targetEl.focus();
+      }
+    }
   }
 
   function closeKeysModal() {
@@ -1022,7 +1071,99 @@
     if (modal) modal.hidden = true;
   }
 
+  function openInstallModal() {
+    const modal = $("install-modal");
+    if (!modal) return;
+    const triggerBtn = $("trigger-pwa-install-btn");
+    const statusBox = $("pwa-install-status");
+    const isStandalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true;
+
+    if (isStandalone) {
+      if (triggerBtn) triggerBtn.hidden = true;
+      if (statusBox) {
+        statusBox.textContent = "✅ Додаток MonoPilot AI вже відкрито у встановленому standalone-режимі.";
+      }
+    } else if (state.deferredInstallPrompt) {
+      if (triggerBtn) triggerBtn.hidden = false;
+      if (statusBox) {
+        statusBox.textContent = "🚀 Ваш браузер готовий встановити MonoPilot AI як повноцінний додаток у 1 клік:";
+      }
+    } else {
+      if (triggerBtn) triggerBtn.hidden = true;
+      if (statusBox) {
+        statusBox.textContent = "Відкрийте сторінку в Chrome (Android) або Safari (iPhone) та дотримуйтесь короткої інструкції нижче:";
+      }
+    }
+    modal.hidden = false;
+  }
+
+  function closeInstallModal() {
+    const modal = $("install-modal");
+    if (modal) modal.hidden = true;
+  }
+
+  async function resetDemoData() {
+    const btns = [$("reset-demo-btn"), $("qa-demo-btn")].filter(Boolean);
+    btns.forEach((b) => {
+      b.disabled = true;
+    });
+    try {
+      const res = await apiRequest("/api/data/demo", { method: "POST" });
+      showToast(res.message || `Завантажено ${res.total_in_db} демо-транзакцій`, "ok");
+      await refreshAll();
+    } catch (err) {
+      showToast(`Помилка скидання demo: ${err.message}`, "err");
+    } finally {
+      btns.forEach((b) => {
+        b.disabled = false;
+      });
+    }
+  }
+
+  function registerServiceWorker() {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        // Ignore SW registration failure in restricted environments
+      });
+    }
+  }
+
   function bindEvents() {
+    window.addEventListener("beforeinstallprompt", (event) => {
+      event.preventDefault();
+      state.deferredInstallPrompt = event;
+      const installBtn = $("install-app-btn");
+      if (installBtn) {
+        installBtn.classList.add("btn-primary");
+      }
+    });
+
+    window.addEventListener("appinstalled", () => {
+      state.deferredInstallPrompt = null;
+      closeInstallModal();
+      showToast("MonoPilot AI встановлено на пристрій!", "ok");
+    });
+
+    // Mobile 4-tab navigation
+    document.querySelectorAll(".mobile-nav-item").forEach((navBtn) => {
+      navBtn.addEventListener("click", () => {
+        setMobileTab(navBtn.getAttribute("data-tab") || "home");
+      });
+    });
+
+    // Quick Action Pills
+    $("qa-sync-btn")?.addEventListener("click", () => openKeysModal("mono-token-input"));
+    $("qa-csv-btn")?.addEventListener("click", () => openKeysModal("csv-file-input"));
+    $("qa-demo-btn")?.addEventListener("click", resetDemoData);
+    $("qa-ask-ai-btn")?.addEventListener("click", () => {
+      if (window.innerWidth <= 860) {
+        setMobileTab("chat");
+      }
+      $("chat-input")?.focus();
+    });
+
     // Period pills
     document.querySelectorAll(".period-pill").forEach((pill) => {
       pill.addEventListener("click", () => {
@@ -1063,29 +1204,33 @@
       });
     }
 
+    // Copy SQL delegation in chat inspector
+    $("chat-messages")?.addEventListener("click", async (e) => {
+      const copyBtn = e.target.closest(".copy-sql-btn");
+      if (!copyBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const sqlText = copyBtn.getAttribute("data-sql") || "";
+      if (!sqlText) return;
+      try {
+        await navigator.clipboard.writeText(sqlText);
+        showToast("SQL-запит скопійовано в буфер обміну", "ok");
+      } catch {
+        showToast("Не вдалося скопіювати SQL у цьому браузері", "err");
+      }
+    });
+
     // Clear chat
     $("clear-chat-btn")?.addEventListener("click", () => {
       state.history = [];
       seedWelcomeMessage();
     });
 
-    // Reset Demo
-    $("reset-demo-btn")?.addEventListener("click", async () => {
-      const btn = $("reset-demo-btn");
-      if (btn) btn.disabled = true;
-      try {
-        const res = await apiRequest("/api/data/demo", { method: "POST" });
-        showToast(res.message || `Завантажено ${res.total_in_db} демо-транзакцій`, "ok");
-        await refreshAll();
-      } catch (err) {
-        showToast(`Помилка скидання demo: ${err.message}`, "err");
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    });
+    // Reset Demo top button
+    $("reset-demo-btn")?.addEventListener("click", resetDemoData);
 
-    // Modal controls
-    $("open-keys-btn")?.addEventListener("click", openKeysModal);
+    // Keys modal controls
+    $("open-keys-btn")?.addEventListener("click", () => openKeysModal());
     $("close-modal-btn")?.addEventListener("click", closeKeysModal);
     $("close-modal-x")?.addEventListener("click", closeKeysModal);
 
@@ -1095,9 +1240,31 @@
       }
     });
 
+    // Install modal controls
+    $("install-app-btn")?.addEventListener("click", openInstallModal);
+    $("close-install-modal-btn")?.addEventListener("click", closeInstallModal);
+    $("close-install-modal-x")?.addEventListener("click", closeInstallModal);
+
+    $("install-modal")?.addEventListener("click", (e) => {
+      if (e.target === $("install-modal")) {
+        closeInstallModal();
+      }
+    });
+
+    $("trigger-pwa-install-btn")?.addEventListener("click", async () => {
+      if (!state.deferredInstallPrompt) return;
+      state.deferredInstallPrompt.prompt();
+      const choice = await state.deferredInstallPrompt.userChoice;
+      state.deferredInstallPrompt = null;
+      if (choice?.outcome === "accepted") {
+        closeInstallModal();
+      }
+    });
+
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !$("keys-modal")?.hidden) {
-        closeKeysModal();
+      if (e.key === "Escape") {
+        if (!$("keys-modal")?.hidden) closeKeysModal();
+        if (!$("install-modal")?.hidden) closeInstallModal();
       }
     });
 
@@ -1228,6 +1395,10 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    const params = new URLSearchParams(window.location.search);
+    const initialTab = params.get("tab") || "home";
+    setMobileTab(initialTab);
+    registerServiceWorker();
     seedWelcomeMessage();
     bindEvents();
     refreshAll();

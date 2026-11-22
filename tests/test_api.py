@@ -143,3 +143,23 @@ def test_sync_monobank_without_token_returns_400(client: TestClient) -> None:
         json={"days": 31, "account_id": "0"},
     )
     assert response.status_code == 400
+
+
+def test_pwa_manifest_service_worker_and_icons(client: TestClient) -> None:
+    """Verify PWA manifest, root-scoped service worker, and PNG app icons are served."""
+    manifest_resp = client.get("/manifest.webmanifest")
+    assert manifest_resp.status_code == 200
+    manifest_data = manifest_resp.json()
+    assert manifest_data["display"] == "standalone"
+    assert manifest_data["short_name"] == "MonoPilot"
+    assert len(manifest_data["icons"]) >= 2
+
+    sw_resp = client.get("/sw.js")
+    assert sw_resp.status_code == 200
+    assert "javascript" in sw_resp.headers.get("content-type", "")
+    assert "CACHE_NAME" in sw_resp.text
+
+    for icon_path in ("/static/icons/icon-192.png", "/static/icons/icon-512.png", "/static/icons/apple-touch-icon.png"):
+        icon_resp = client.get(icon_path)
+        assert icon_resp.status_code == 200
+        assert icon_resp.content.startswith(b"\x89PNG\r\n\x1a\n")

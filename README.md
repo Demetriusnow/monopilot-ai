@@ -30,6 +30,14 @@
 ### Інтерактивні бюджети, таблиця транзакцій та інспектор Tool Calls & SQL (`🔍 Під капотом`)
 ![Відповідь AI-агента та інспектор SQL у MonoPilot AI](docs/screenshots/ai-sql-inspector.png)
 
+### Мобільна версія (PWA-апка для iOS та Android)
+Встановлюється на головний екран смартфона як окремий додаток (`display: standalone`) із нижнім банківським меню на 4 вкладки (**Головна · Аналітика · Бюджети · AI Чат**):
+
+- **Android (Chrome):** відкрийте сайт -> натисніть кнопку **«📱 Додаток»** -> **«Встановити додаток»** (або меню `⋮ -> Додати на головний екран`).
+- **iPhone (Safari):** відкрийте сайт -> кнопка **«Поділитися»** ↗ -> **«На Початковий екран»** -> **«Додати»**.
+
+![Мобільний PWA-додаток MonoPilot AI у стилі monobank Black](docs/screenshots/mobile-app-view.png)
+
 ---
 
 ## Архітектура системи
@@ -115,9 +123,12 @@ MonoPilotAI/
 │   │   ├── csv_importer.py      # Парсер та ідемпотентний імпортер CSV-виписок Monobank
 │   │   └── monobank_client.py   # Клієнт Monobank Open API (виписка + курси валют)
 │   ├── static/
-│   │   ├── index.html           # Інтерфейс дашборду та AI-чату
-│   │   ├── styles.css           # Темна фінтех-тема в стилі monobank
-│   │   └── app.js               # Chart.js графіки, бюджети, CSV-завантаження, XSS-safe markdown & SQL inspector
+│   │   ├── icons/               # PWA-іконки (icon.svg, icon-192.png, icon-512.png, apple-touch-icon.png)
+│   │   ├── index.html           # Інтерфейс у стилі monobank Black + мобільне 4-табове меню
+│   │   ├── manifest.webmanifest # Web App Manifest для iOS та Android
+│   │   ├── styles.css           # Glassmorphism дизайн та мобільний PWA layout
+│   │   ├── sw.js                # Root-scoped Service Worker для офлайн-оболонки
+│   │   └── app.js               # Chart.js графіки, бюджети, CSV-завантаження, PWA install & SQL inspector
 │   ├── config.py                # Pydantic Settings (змінні середовища / .env)
 │   ├── main.py                  # Точка входу FastAPI + lifespan автоініціалізація БД
 │   └── schemas.py               # Спільні Pydantic v2 моделі запитів і відповідей
