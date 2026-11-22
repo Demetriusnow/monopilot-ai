@@ -48,6 +48,28 @@ if _STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def serve_manifest() -> FileResponse:
+    """Serve the Web App Manifest at root scope for PWA installation."""
+    manifest_file = _STATIC_DIR / "manifest.webmanifest"
+    if not manifest_file.exists():
+        raise HTTPException(status_code=404, detail="manifest.webmanifest not found.")
+    return FileResponse(manifest_file, media_type="application/manifest+json")
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def serve_service_worker() -> FileResponse:
+    """Serve the root-scoped Service Worker with no-cache headers."""
+    sw_file = _STATIC_DIR / "sw.js"
+    if not sw_file.exists():
+        raise HTTPException(status_code=404, detail="sw.js not found.")
+    return FileResponse(
+        sw_file,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/", include_in_schema=False)
 async def serve_index() -> FileResponse:
     """Serve the single-page web UI entrypoint."""
