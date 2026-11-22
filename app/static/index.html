@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MonoPilot AI — Персональний фінансовий копілот</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Navigation & Live Status Bar -->
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
+            <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#monoGrad)" />
+            <path
+              d="M9 21V11l7 6 7-6v10"
+              stroke="#ffffff"
+              stroke-width="2.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <circle cx="24" cy="9" r="2.2" fill="#ffffff" />
+            <defs>
+              <linearGradient id="monoGrad" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#fa5255" />
+                <stop offset="1" stop-color="#d92b4b" />
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title-row">
+            <h1>MonoPilot AI</h1>
+            <span class="tech-badge">Gemini 3.8 Flash + Monobank API</span>
+          </div>
+          <p class="brand-subtitle">Tool-grounded фінансовий агент із Read-Only SQL аудитом</p>
+        </div>
+      </div>
+
+      <div class="topbar-status">
+        <div id="currency-ticker" class="currency-ticker" aria-label="Курс валют monobank">
+          <span class="ticker-item"><span class="ticker-ccy">USD</span> <span class="mono-num">— / —</span></span>
+          <span class="ticker-sep"></span>
+          <span class="ticker-item"><span class="ticker-ccy">EUR</span> <span class="mono-num">— / —</span></span>
+        </div>
+
+        <div class="status-pills">
+          <span id="mode-pill" class="status-pill pill-demo">
+            <span class="pill-dot"></span>
+            <span class="pill-label">Demo Mode</span>
+          </span>
+          <span id="ai-pill" class="status-pill pill-fallback">
+            <span class="pill-dot"></span>
+            <span class="pill-label">Local Tools</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="open-keys-btn" type="button" class="btn btn-secondary">
+          <span>🔑</span>
+          <span>Підключити ключі / Monobank</span>
+        </button>
+        <button id="reset-demo-btn" type="button" class="btn btn-ghost">
+          <span>↺</span>
+          <span>Скинути Demo</span>
+        </button>
+        <a
+          href="/docs"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="btn btn-outline"
+        >
+          Swagger /docs ↗
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Two-Column Workspace -->
+    <main class="workspace-grid">
+      <!-- Left Column: Analytics Dashboard -->
+      <section class="dashboard-panel" aria-label="Аналітична панель">
+        <div class="panel-header">
+          <div>
+            <h2>Аналітика витрат та прогноз</h2>
+            <p id="dashboard-meta" class="panel-subtitle">Завантаження транзакцій...</p>
+          </div>
+          <div class="period-selector" role="group" aria-label="Період аналітики">
+            <button type="button" class="period-pill" data-days="7">7 днів</button>
+            <button type="button" class="period-pill active" data-days="30">30 днів</button>
+            <button type="button" class="period-pill" data-days="90">90 днів</button>
+          </div>
+        </div>
+
+        <!-- 4 KPI Cards -->
+        <div class="kpi-grid">
+          <article class="card kpi-card">
+            <div class="kpi-label">Витрати за період</div>
+            <div id="kpi-expense-val" class="kpi-value mono-num">— ₴</div>
+            <div id="kpi-expense-sub" class="kpi-sub">— транзакцій</div>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-label">Доходи + Кешбек</div>
+            <div id="kpi-income-val" class="kpi-value kpi-positive mono-num">— ₴</div>
+            <div id="kpi-income-sub" class="kpi-sub">Кешбек: — ₴</div>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-label">Нетто / Баланс</div>
+            <div id="kpi-net-val" class="kpi-value mono-num">— ₴</div>
+            <div id="kpi-net-sub" class="kpi-sub">Баланс картки: — ₴</div>
+          </article>
+
+          <article class="card kpi-card">
+            <div class="kpi-label-row">
+              <span class="kpi-label">Прогноз місяця</span>
+              <span id="kpi-forecast-badge" class="forecast-badge status-on-track">В межах плану</span>
+            </div>
+            <div id="kpi-forecast-val" class="kpi-value mono-num">— ₴</div>
+            <div id="kpi-forecast-sub" class="kpi-sub">Денний ліміт: — ₴</div>
+          </article>
+        </div>
+
+        <!-- Charts Grid -->
+        <div class="charts-grid">
+          <article class="card chart-card">
+            <div class="card-header">
+              <h3>Витрати за категоріями</h3>
+              <span id="categories-total-chip" class="chip mono-num">0 категорій</span>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="categories-chart"></canvas>
+              <div id="categories-empty" class="chart-fallback" hidden></div>
+            </div>
+          </article>
+
+          <article class="card chart-card">
+            <div class="card-header">
+              <h3>Динаміка по днях</h3>
+              <span class="chip">Витрати vs Доходи</span>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="daily-chart"></canvas>
+              <div id="daily-empty" class="chart-fallback" hidden></div>
+            </div>
+          </article>
+        </div>
+
+        <!-- Insights Strip -->
+        <div class="insights-grid">
+          <article class="card insight-card">
+            <div class="card-header">
+              <h3>Регулярні підписки</h3>
+              <span id="subscriptions-count" class="chip mono-num">0</span>
+            </div>
+            <div id="subscriptions-list" class="insight-list">
+              <p class="empty-state">Пошук повторюваних списань...</p>
+            </div>
+          </article>
+
+          <article class="card insight-card">
+            <div class="card-header">
+              <h3>Аномальні витрати</h3>
+              <span id="anomalies-count" class="chip mono-num">0</span>
+            </div>
+            <div id="anomalies-list" class="insight-list">
+              <p class="empty-state">Аналіз статистичних відхилень...</p>
+            </div>
+          </article>
+        </div>
+
+        <!-- Category Budgets Interactive Card -->
+        <article class="card budgets-card">
+          <div class="card-header">
+            <div>
+              <h3>Бюджети по категоріях</h3>
+              <p class="panel-subtitle">Оновіть місячний ліміт у гривнях — прогноз бюджету перерахується миттєво</p>
+            </div>
+            <span id="budgets-total-chip" class="chip mono-num">0 ₴/міс</span>
+          </div>
+          <div id="budgets-grid" class="budgets-grid">
+            <p class="empty-state">Завантаження бюджетів...</p>
+          </div>
+        </article>
+
+        <!-- Collapsible Recent Transactions Table -->
+        <details class="card transactions-card" open>
+          <summary class="transactions-summary">
+            <div class="summary-left">
+              <span class="chevron" aria-hidden="true">▾</span>
+              <h3>Останні транзакції</h3>
+              <span id="transactions-count" class="chip mono-num">0</span>
+            </div>
+            <span class="summary-hint">Натисніть, щоб згорнути / розгорнути</span>
+          </summary>
+
+          <div class="table-scroll">
+            <table class="tx-table">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>Опис / Мерчант</th>
+                  <th>Категорія</th>
+                  <th class="align-right">Сума (UAH)</th>
+                </tr>
+              </thead>
+              <tbody id="transactions-tbody">
+                <tr>
+                  <td colspan="4" class="empty-cell">Завантаження транзакцій...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <!-- Right Column: AI Agent Chat -->
+      <aside class="chat-panel card" aria-label="AI Агент MonoPilot">
+        <div class="chat-header">
+          <div>
+            <h2>AI Фінансовий Агент</h2>
+            <p class="panel-subtitle">Кожна цифра підтверджена реальним tool call &amp; SQL</p>
+          </div>
+          <button id="clear-chat-btn" type="button" class="btn btn-ghost btn-sm" title="Очистити історію чату">
+            Очистити
+          </button>
+        </div>
+
+        <div class="starter-prompts-wrap">
+          <div class="starter-label">Швидкі сценарії запитів:</div>
+          <div id="starter-prompts" class="starter-prompts">
+            <button type="button" class="prompt-chip" data-prompt="Знайди всі мої регулярні підписки та порахуй витрати за рік">
+              Знайди всі мої регулярні підписки та порахуй витрати за рік
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="Скільки я витратив на кафе та доставку цього місяця порівняно з минулим?">
+              Скільки я витратив на кафе та доставку цього місяця порівняно з минулим?
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="Знайди аномально великі витрати за останні 90 днів">
+              Знайди аномально великі витрати за останні 90 днів
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="Який прогноз витрат до кінця місяця і скільки можна витрачати щодня?">
+              Який прогноз витрат до кінця місяця і скільки можна витрачати щодня?
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="Який зараз курс долара та євро в monobank і скільки моїх витрат у перерахунку в USD?">
+              Який зараз курс долара та євро в monobank і скільки моїх витрат у перерахунку в USD?
+            </button>
+          </div>
+        </div>
+
+        <div id="chat-messages" class="chat-messages" aria-live="polite">
+          <!-- Initial welcome message rendered by app.js -->
+        </div>
+
+        <form id="chat-form" class="chat-form">
+          <div class="chat-input-box">
+            <textarea
+              id="chat-input"
+              rows="2"
+              placeholder="Запитайте про витрати, підписки, бюджет або курс валют..."
+              aria-label="Повідомлення для AI агента"
+            ></textarea>
+            <button id="chat-send-btn" type="submit" class="btn btn-primary send-btn">
+              <span class="send-label">Надіслати</span>
+              <span class="spinner" hidden aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="chat-input-hint">
+            <span>Enter — надіслати · Shift+Enter — перенесення рядка</span>
+            <span id="chat-context-indicator" class="mono-num">Контекст: 30д</span>
+          </div>
+        </form>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Keys & Monobank Connection Modal -->
+  <div id="keys-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="keys-modal-title">
+    <div class="modal-card card">
+      <div class="modal-header">
+        <h3 id="keys-modal-title">Підключення API-ключів та Monobank</h3>
+        <button id="close-modal-x" type="button" class="icon-btn" aria-label="Закрити модальне вікно">✕</button>
+      </div>
+
+      <p class="modal-notice">
+        🔒 Ключі зберігаються виключно в <code>sessionStorage</code> поточної вкладки браузера і передаються на бекенд
+        через заголовки <code>X-Gemini-Key</code> та <code>X-Mono-Token</code> без збереження в базі даних.
+      </p>
+
+      <div class="form-group">
+        <label for="gemini-key-input">Gemini API Key (опціонально)</label>
+        <div class="input-with-toggle">
+          <input
+            id="gemini-key-input"
+            type="password"
+            autocomplete="off"
+            placeholder="Вставте ключ Gemini API для режиму AI Live"
+          />
+          <button type="button" class="toggle-vis-btn" data-target="gemini-key-input">Показати</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="mono-token-input">Monobank X-Token (опціонально)</label>
+        <div class="input-with-toggle">
+          <input
+            id="mono-token-input"
+            type="password"
+            autocomplete="off"
+            placeholder="Персональний токен з api.monobank.ua"
+          />
+          <button type="button" class="toggle-vis-btn" data-target="mono-token-input">Показати</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="mono-days-input">Період синхронізації Monobank (1–31 днів)</label>
+        <input id="mono-days-input" type="number" min="1" max="31" value="31" />
+      </div>
+
+      <div class="modal-divider"></div>
+
+      <div class="form-group">
+        <label for="csv-file-input">Або імпорт CSV-виписки Monobank (.csv)</label>
+        <div class="csv-upload-row">
+          <input id="csv-file-input" type="file" accept=".csv,text/csv" />
+          <button id="upload-csv-btn" type="button" class="btn btn-secondary btn-sm">Завантажити CSV</button>
+        </div>
+        <label class="checkbox-inline">
+          <input id="csv-replace-checkbox" type="checkbox" checked />
+          <span>Замінити поточні транзакції перед імпортом</span>
+        </label>
+      </div>
+
+      <div id="modal-feedback" class="modal-feedback" hidden></div>
+
+      <div class="modal-actions">
+        <button id="save-keys-btn" type="button" class="btn btn-secondary">Зберегти в сесії</button>
+        <button id="sync-mono-btn" type="button" class="btn btn-primary">Синхронізувати Monobank</button>
+        <button id="clear-keys-btn" type="button" class="btn btn-ghost">Очистити ключі</button>
+        <button id="close-modal-btn" type="button" class="btn btn-outline">Закрити</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+</body>
+</html>
