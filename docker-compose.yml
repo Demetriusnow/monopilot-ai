@@ -1,0 +1,32 @@
+services:
+  monopilot:
+    build: .
+    container_name: monopilot-ai
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      DATABASE_PATH: /app/data/monopilot.db
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+    volumes:
+      - monopilot_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  monopilot_data:
