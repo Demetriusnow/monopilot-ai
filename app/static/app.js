@@ -33,11 +33,14 @@
     health: null,
     dashboard: null,
     budgets: [],
+    jars: [],
+    selectedJarId: "",
     history: [],
     isSending: false,
     categoriesChart: null,
     dailyChart: null,
     deferredInstallPrompt: null,
+    whatIfTimer: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -273,6 +276,15 @@
       throw new Error(String(detail));
     }
     return payload;
+  }
+
+  function buildOptionalGeminiHeaders(baseHeaders = {}) {
+    const headers = { ...baseHeaders };
+    const geminiKey = getSessionKey(SESSION_KEYS.GEMINI);
+    if (geminiKey) {
+      headers["X-Gemini-Key"] = geminiKey;
+    }
+    return headers;
   }
 
   function setMobileTab(tabName) {
@@ -765,6 +777,286 @@
       .join("");
   }
 
+  /* =====================================================================
+     Mono Jars + What-If Simulator
+     ===================================================================== */
+
+  function syncJarSelectOptions() {
+    const select = $("whatif-jar-select");
+    if (!select) return;
+    const list = Array.isArray(state.jars) ? state.jars : [];
+
+    if (list.length === 0) {
+      state.selectedJarId = "";
+      select.innerHTML = `<option value="">Загальні накопичення</option>`;
+      return;
+    }
+
+    const exists = list.some((j) => j.id === state.selectedJarId);
+    if (!exists) {
+      state.selectedJarId = list[0].id;
+    }
+
+    select.innerHTML = list
+      .map(
+        (jar) =>
+          `<option value="${escapeHtml(jar.id)}"${jar.id === state.selectedJarId ? " selected" : ""}>${escapeHtml(jar.icon || "🏺")} ${escapeHtml(jar.name)} (${formatNumber(jar.remaining_uah, 0)} ₴ до цілі)</option>`
+      )
+      .join("");
+  }
+
+  function renderJars() {
+    const grid = $("jars-grid");
+    if (!grid) return;
+    const list = Array.isArray(state.jars) ? state.jars : [];
+    syncJarSelectOptions();
+
+    if (list.length === 0) {
+      grid.innerHTML = `<p class="empty-state">У вас ще немає Банок. Натисніть «+ Нова Банка», щоб задати фінансову ціль.</p>`;
+      return;
+    }
+
+    grid.innerHTML = list
+      .map((jar) => {
+        const pct = Math.min(100, Math.max(0, Number(jar.progress_pct || 0)));
+        const isSelected = jar.id === state.selectedJarId;
+        let etaText = "Вкажіть внесок";
+        if (Number(jar.remaining_uah || 0) <= 0) {
+          etaText = "✅ Зібрано!";
+        } else if (jar.months_to_goal !== null && jar.months_to_goal !== undefined) {
+          etaText = `~${formatNumber(jar.months_to_goal, 1)} міс.`;
+        }
+
+        return `
+          <div class="jar-card${isSelected ? " is-selected" : ""}" data-jar-id="${escapeHtml(jar.id)}">
+            <div class="jar-card-top">
+              <div class="jar-title-wrap">
+                <span class="jar-emoji">${escapeHtml(jar.icon || "🏺")}</span>
+                <span class="jar-name" title="${escapeHtml(jar.name)}">${escapeHtml(jar.name)}</span>
+              </div>
+              <button
+                type="button"
+                class="icon-btn delete-jar-btn"
+                data-jar-id="${escapeHtml(jar.id)}"
+                title="Видалити банку"
+                aria-label="Видалити банку ${escapeHtml(jar.name)}"
+              >✕</button>
+            </div>
+            <div class="jar-amounts-row mono-num">
+              <span class="jar-current">${formatNumber(jar.current_uah, 0)} ₴</span>
+              <span class="jar-target">із ${formatNumber(jar.target_uah, 0)} ₴ (${formatNumber(pct, 0)}%)</span>
+            </div>
+            <div class="jar-progress-track">
+              <div class="jar-progress-fill" style="width: ${pct.toFixed(1)}%"></div>
+            </div>
+            <div class="jar-card-foot">
+              <span class="mono-num">+${formatNumber(jar.monthly_contribution_uah, 0)} ₴/міс</span>
+              <span class="jar-badge-eta mono-num">${etaText}</span>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  function renderWhatIfResult(sim) {
+    const box = $("whatif-result");
+    if (!box || !sim) return;
+
+    const baselineMonthly = Number(sim.baseline_monthly_savings_uah || 0);
+    const totalNew = Number(sim.total_new_monthly_savings_uah || 0);
+    const monthlyBoost = Math.max(0, totalNew - baselineMonthly);
+    const annualBoost = Number(sim.annual_savings_boost_uah || 0);
+    const catSav = Number(sim.monthly_category_savings_uah || 0);
+    const subSav = Number(sim.monthly_subscription_savings_uah || 0);
+
+    let jarLine = `<span>Оберіть або створіть Банку, щоб побачити прискорення досягнення цілі.</span>`;
+    if (sim.jar_name) {
+      const baseM = sim.baseline_months !== null && sim.baseline_months !== undefined
+        ? `${formatNumber(sim.baseline_months, 1)} міс`
+        : "∞";
+      const simM = sim.simulated_months !== null && sim.simulated_months !== undefined
+        ? `${formatNumber(sim.simulated_months, 1)} міс`
+        : "∞";
+      const savedM = Number(sim.months_saved || 0);
+      const savedPill =
+        savedM > 0
+          ? `<strong> · Швидше на ${formatNumber(savedM, 1)} міс.!</strong>`
+          : "";
+      jarLine = `<span>🏺 <strong>${escapeHtml(sim.jar_name)}</strong>: <span class="mono-num">${baseM} → ${simM}</span>${savedPill}</span>`;
+    }
+
+    box.innerHTML = `
+      <div class="whatif-result-top">
+        <span class="whatif-boost-main mono-num">+${formatUAH(monthlyBoost)} / міс додатково (разом ${formatUAH(totalNew)}/міс)</span>
+        <span class="whatif-annual-pill mono-num">+${formatNumber(annualBoost, 0)} ₴ / рік</span>
+      </div>
+      <div class="whatif-result-meta">
+        ${jarLine}
+        <span class="mono-num">Категорії: +${formatNumber(catSav, 0)} ₴ · Підписки: +${formatNumber(subSav, 0)} ₴</span>
+      </div>
+    `;
+  }
+
+  async function simulateWhatIf() {
+    const box = $("whatif-result");
+    const jarId = $("whatif-jar-select")?.value || null;
+    const cafeCut = Number($("cut-cafe-slider")?.value || 0);
+    const hobbyCut = Number($("cut-hobby-slider")?.value || 0);
+    const extraRaw = Number($("whatif-extra-input")?.value || 0);
+    const extraMonthly = Number.isFinite(extraRaw) && extraRaw > 0 ? extraRaw : 0;
+
+    const cancelSubs = Array.from(document.querySelectorAll(".whatif-sub-toggle:checked"))
+      .map((cb) => cb.value)
+      .filter(Boolean);
+
+    try {
+      const sim = await apiRequest("/api/jars/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jar_id: jarId || null,
+          category_cuts_pct: {
+            "Кафе та ресторани": cafeCut,
+            "Покупки та хобі": hobbyCut,
+          },
+          cancel_subscriptions: cancelSubs,
+          extra_monthly_uah: extraMonthly,
+        }),
+      });
+      renderWhatIfResult(sim);
+    } catch (err) {
+      if (box) {
+        box.innerHTML = `<span class="empty-state">Симулятор очікує підключення API (${escapeHtml(err.message)})</span>`;
+      }
+    }
+  }
+
+  function scheduleWhatIfSimulation() {
+    if (state.whatIfTimer) {
+      window.clearTimeout(state.whatIfTimer);
+    }
+    state.whatIfTimer = window.setTimeout(() => {
+      simulateWhatIf();
+    }, 110);
+  }
+
+  async function loadJars() {
+    try {
+      const jars = await apiRequest("/api/jars");
+      state.jars = Array.isArray(jars) ? jars : [];
+      renderJars();
+      await simulateWhatIf();
+    } catch (err) {
+      const grid = $("jars-grid");
+      if (grid) {
+        grid.innerHTML = `<p class="empty-state">Не вдалося завантажити Банки: ${escapeHtml(err.message)}</p>`;
+      }
+    }
+  }
+
+  async function createJarFromForm() {
+    const nameInput = $("jar-name-input");
+    const targetInput = $("jar-target-input");
+    const currentInput = $("jar-current-input");
+    const monthlyInput = $("jar-monthly-input");
+    const iconInput = $("jar-icon-input");
+    const saveBtn = $("jar-save-btn");
+
+    const name = (nameInput?.value || "").trim();
+    const target = Number(targetInput?.value || 0);
+    const current = Math.max(0, Number(currentInput?.value || 0));
+    const monthly = Math.max(0, Number(monthlyInput?.value || 0));
+    const icon = (iconInput?.value || "🏺").trim() || "🏺";
+
+    if (!name) {
+      showToast("Вкажіть назву для нової Банки.", "err");
+      return;
+    }
+    if (!Number.isFinite(target) || target <= 0) {
+      showToast("Цільова сума Банки має бути більшою за 0.", "err");
+      return;
+    }
+
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      const updated = await apiRequest("/api/jars", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          icon,
+          target_uah: target,
+          current_uah: Number.isFinite(current) ? current : 0,
+          monthly_contribution_uah: Number.isFinite(monthly) ? monthly : 3000,
+        }),
+      });
+      state.jars = Array.isArray(updated) ? updated : [];
+      if (state.jars.length > 0) {
+        const newest = state.jars[state.jars.length - 1];
+        if (newest?.id) state.selectedJarId = newest.id;
+      }
+      if (nameInput) nameInput.value = "";
+      if (targetInput) targetInput.value = "";
+      if (currentInput) currentInput.value = "0";
+      const form = $("new-jar-form");
+      if (form) form.hidden = true;
+      renderJars();
+      await simulateWhatIf();
+      showToast(`Банку «${name}» створено!`, "ok");
+    } catch (err) {
+      showToast(`Помилка створення Банки: ${err.message}`, "err");
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  async function deleteJarById(jarId) {
+    if (!jarId) return;
+    try {
+      const res = await apiRequest(`/api/jars/${encodeURIComponent(jarId)}`, {
+        method: "DELETE",
+      });
+      if (Array.isArray(res)) {
+        state.jars = res;
+      } else {
+        await loadJars();
+        return;
+      }
+      if (state.selectedJarId === jarId) {
+        state.selectedJarId = state.jars[0]?.id || "";
+      }
+      renderJars();
+      await simulateWhatIf();
+      showToast("Банку видалено", "ok");
+    } catch (err) {
+      showToast(`Помилка видалення Банки: ${err.message}`, "err");
+    }
+  }
+
+  async function saveCategoryBudget(category, limitValue) {
+    const numeric = Number(limitValue);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+      showToast("Вкажіть коректний невід'ємний ліміт бюджету.", "err");
+      return;
+    }
+    try {
+      state.budgets = await apiRequest("/api/budgets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category,
+          monthly_limit_uah: numeric,
+        }),
+      });
+      await loadDashboard();
+      renderBudgets();
+      showToast(`Ліміт «${category}» оновлено: ${formatNumber(numeric, 0)} ₴/міс`, "ok");
+    } catch (err) {
+      showToast(`Помилка оновлення бюджету: ${err.message}`, "err");
+    }
+  }
+
   async function loadHealth() {
     try {
       state.health = await apiRequest("/api/health");
@@ -800,29 +1092,6 @@
     }
   }
 
-  async function saveCategoryBudget(category, limitValue) {
-    const numeric = Number(limitValue);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      showToast("Вкажіть коректний невід'ємний ліміт бюджету.", "err");
-      return;
-    }
-    try {
-      state.budgets = await apiRequest("/api/budgets", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category,
-          monthly_limit_uah: numeric,
-        }),
-      });
-      await loadDashboard();
-      renderBudgets();
-      showToast(`Ліміт «${category}» оновлено: ${formatNumber(numeric, 0)} ₴/міс`, "ok");
-    } catch (err) {
-      showToast(`Помилка оновлення бюджету: ${err.message}`, "err");
-    }
-  }
-
   async function loadTransactions() {
     try {
       const rows = await apiRequest("/api/transactions?limit=50&offset=0");
@@ -833,17 +1102,54 @@
   }
 
   async function refreshAll() {
-    await Promise.all([loadHealth(), loadDashboard(), loadBudgets(), loadTransactions()]);
+    await Promise.all([loadHealth(), loadDashboard(), loadBudgets(), loadTransactions(), loadJars()]);
     renderBudgets();
   }
 
+  /* =====================================================================
+     Multi-Agent Chat + Live SSE Streaming
+     ===================================================================== */
+
   function renderToolTracesHtml(data) {
     const traces = Array.isArray(data?.tool_traces) ? data.tool_traces : [];
+    const pipeline = Array.isArray(data?.agent_pipeline) ? data.agent_pipeline : [];
     const latency = Math.round(Number(data?.total_latency_ms || 0));
     const modelName = escapeHtml(data?.model || "MonoPilot");
+    const orchMode = escapeHtml(data?.orchestration_mode || "multi-agent");
     const fallbackBadge = data?.used_fallback
       ? `<span class="trace-badge trace-badge-warn">Fallback режим</span>`
       : `<span class="trace-badge trace-badge-ok">Gemini Tool Loop</span>`;
+
+    const pipelineSection =
+      pipeline.length > 0
+        ? `
+          <div class="agent-pipeline-list">
+            <div class="trace-section-label">Multi-Agent Pipeline (${orchMode}):</div>
+            ${pipeline
+              .map((stage) => {
+                const stCls = stage.status === "ok" || stage.status === "done"
+                  ? "trace-badge-ok"
+                  : stage.status === "blocked" || stage.status === "error"
+                    ? "trace-badge-err"
+                    : "trace-badge-warn";
+                return `
+                  <div class="stage-trace-card">
+                    <div class="stage-trace-top">
+                      <span class="stage-trace-title">${escapeHtml(stage.label || stage.agent_role)}</span>
+                      <div class="tool-inspector-meta">
+                        <span class="trace-badge">${escapeHtml(stage.agent_role)}</span>
+                        <span class="trace-badge">${Number(stage.duration_ms || 0).toFixed(1)} ms</span>
+                        <span class="trace-badge ${stCls}">${escapeHtml(stage.status || "ok")}</span>
+                      </div>
+                    </div>
+                    <div class="stage-trace-summary">${escapeHtml(stage.summary || "")}</div>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+        `
+        : "";
 
     const traceCards =
       traces.length === 0
@@ -891,11 +1197,14 @@
             })
             .join("");
 
+    const agentsBadge = pipeline.length > 0 ? `<span class="trace-badge">${pipeline.length} agents</span>` : "";
+
     return `
       <details class="tool-inspector">
         <summary>
-          <span class="tool-inspector-title">🔍 Під капотом (Tool Calls &amp; SQL)</span>
+          <span class="tool-inspector-title">🔍 Під капотом (Multi-Agent Pipeline + Tool Calls &amp; SQL)</span>
           <div class="tool-inspector-meta">
+            ${agentsBadge}
             <span class="trace-badge">${traces.length} tools</span>
             <span class="trace-badge">${latency} ms</span>
             <span class="trace-badge">${modelName}</span>
@@ -903,22 +1212,17 @@
           </div>
         </summary>
         <div class="tool-inspector-body">
+          ${pipelineSection}
           ${traceCards}
         </div>
       </details>
     `;
   }
 
-  function appendChatMessage(role, content, chatResponseData = null) {
-    const container = $("chat-messages");
-    if (!container) return;
-
-    const row = document.createElement("div");
-    row.className = `msg-row ${role === "user" ? "msg-user" : "msg-assistant"}`;
-
+  function buildAssistantHeaderElement(chatResponseData = null) {
     const roleLabel = document.createElement("div");
     roleLabel.className = "msg-role";
-    if (role === "assistant" && chatResponseData?.model) {
+    if (chatResponseData?.model) {
       const rowHeader = document.createElement("div");
       rowHeader.className = "msg-role-row";
       const nameSpan = document.createElement("span");
@@ -932,7 +1236,25 @@
       rowHeader.appendChild(modelPill);
       roleLabel.appendChild(rowHeader);
     } else {
-      roleLabel.textContent = role === "user" ? "Ви" : "MonoPilot AI";
+      roleLabel.textContent = "MonoPilot AI";
+    }
+    return roleLabel;
+  }
+
+  function appendChatMessage(role, content, chatResponseData = null) {
+    const container = $("chat-messages");
+    if (!container) return;
+
+    const row = document.createElement("div");
+    row.className = `msg-row ${role === "user" ? "msg-user" : "msg-assistant"}`;
+
+    if (role === "user") {
+      const roleLabel = document.createElement("div");
+      roleLabel.className = "msg-role";
+      roleLabel.textContent = "Ви";
+      row.appendChild(roleLabel);
+    } else {
+      row.appendChild(buildAssistantHeaderElement(chatResponseData));
     }
 
     const bubble = document.createElement("div");
@@ -943,7 +1265,6 @@
       bubble.innerHTML = renderMarkdownSafe(content);
     }
 
-    row.appendChild(roleLabel);
     row.appendChild(bubble);
 
     if (role === "assistant" && chatResponseData) {
@@ -958,13 +1279,164 @@
     container.scrollTop = container.scrollHeight;
   }
 
+  function createLiveStreamingRow() {
+    const container = $("chat-messages");
+    if (!container) return null;
+
+    const row = document.createElement("div");
+    row.className = "msg-row msg-assistant msg-streaming";
+    row.innerHTML = `
+      <div class="msg-role">
+        <div class="msg-role-row">
+          <span>MonoPilot AI</span>
+          <span class="msg-model-pill mono-num">Multi-Agent Stream</span>
+        </div>
+      </div>
+      <div class="live-pipeline-card">
+        <div class="live-stepper" aria-label="Multi-Agent Pipeline">
+          <span class="pipeline-step is-active" data-stage="planner">🧠 Планування</span>
+          <span class="pipeline-arrow">→</span>
+          <span class="pipeline-step" data-stage="tools">🗄️ SQL / Tools</span>
+          <span class="pipeline-arrow">→</span>
+          <span class="pipeline-step" data-stage="synthesizer">✍️ Синтез</span>
+        </div>
+        <div class="live-tools-feed"></div>
+      </div>
+      <div class="msg-bubble live-answer-box">
+        <p class="streaming-placeholder">Запуск Multi-Agent оркестратора...</p>
+      </div>
+    `;
+
+    container.appendChild(row);
+    container.scrollTop = container.scrollHeight;
+    return row;
+  }
+
+  function updateStepperForStage(liveRow, stagePayload) {
+    if (!liveRow || !stagePayload) return;
+    const role = String(stagePayload.agent_role || stagePayload.stage || "").toLowerCase();
+    const status = String(stagePayload.status || "ok").toLowerCase();
+    const label = stagePayload.label ? String(stagePayload.label) : "";
+
+    const plannerEl = liveRow.querySelector('[data-stage="planner"]');
+    const toolsEl = liveRow.querySelector('[data-stage="tools"]');
+    const synthEl = liveRow.querySelector('[data-stage="synthesizer"]');
+
+    if (role === "planner") {
+      if (plannerEl) {
+        plannerEl.classList.remove("is-active");
+        plannerEl.classList.add("is-done");
+        if (label) plannerEl.textContent = label;
+      }
+      if (toolsEl && status !== "blocked") {
+        toolsEl.classList.add("is-active");
+      }
+    } else if (role === "sql_analyst" || role === "risk_auditor" || role === "savings_advisor" || role === "tools") {
+      if (plannerEl) {
+        plannerEl.classList.remove("is-active");
+        plannerEl.classList.add("is-done");
+      }
+      if (toolsEl) {
+        if (status === "running") {
+          toolsEl.classList.remove("is-done");
+          toolsEl.classList.add("is-active");
+        } else {
+          toolsEl.classList.remove("is-active");
+          toolsEl.classList.add("is-done");
+          if (synthEl && status !== "blocked") {
+            synthEl.classList.add("is-active");
+          }
+        }
+        if (label) toolsEl.textContent = label;
+      }
+    } else if (role === "synthesizer") {
+      if (plannerEl) {
+        plannerEl.classList.remove("is-active");
+        plannerEl.classList.add("is-done");
+      }
+      if (toolsEl) {
+        toolsEl.classList.remove("is-active");
+        toolsEl.classList.add("is-done");
+      }
+      if (synthEl) {
+        synthEl.classList.remove("is-active");
+        synthEl.classList.add("is-done");
+        if (label) synthEl.textContent = label;
+      }
+    }
+  }
+
+  function appendLiveToolBadge(liveRow, toolPayload) {
+    if (!liveRow || !toolPayload) return;
+    const feed = liveRow.querySelector(".live-tools-feed");
+    const toolsEl = liveRow.querySelector('[data-stage="tools"]');
+    if (toolsEl) {
+      toolsEl.classList.add("is-active");
+    }
+    if (!feed) return;
+
+    const badge = document.createElement("span");
+    const ok = String(toolPayload.status || "ok").toLowerCase() === "ok";
+    badge.className = `live-tool-badge ${ok ? "is-ok" : "is-err"}`;
+    const duration = Number(toolPayload.duration_ms || 0).toFixed(1);
+    badge.textContent = `${toolPayload.tool_name || "tool"} • ${duration}ms ${toolPayload.status || "ok"}`;
+    feed.appendChild(badge);
+  }
+
+  function finalizeLiveStreamingRow(liveRow, chatResponseData) {
+    if (!liveRow) return;
+    const container = $("chat-messages");
+    liveRow.classList.remove("msg-streaming");
+    liveRow.innerHTML = "";
+    liveRow.appendChild(buildAssistantHeaderElement(chatResponseData));
+
+    const bubble = document.createElement("div");
+    bubble.className = "msg-bubble";
+    bubble.innerHTML = renderMarkdownSafe(chatResponseData?.answer || "Отримано порожню відповідь.");
+    liveRow.appendChild(bubble);
+
+    if (chatResponseData) {
+      const traceWrapper = document.createElement("div");
+      traceWrapper.innerHTML = renderToolTracesHtml(chatResponseData);
+      if (traceWrapper.firstElementChild) {
+        liveRow.appendChild(traceWrapper.firstElementChild);
+      }
+    }
+
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  function parseSseFrame(rawFrame) {
+    let eventName = "message";
+    const dataLines = [];
+    for (const line of rawFrame.split("\n")) {
+      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (dataLines.length === 0) return null;
+    const rawData = dataLines.join("\n");
+    let parsed = rawData;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      // Keep plain text payload
+    }
+    return { event: eventName, data: parsed };
+  }
+
   function seedWelcomeMessage() {
     const container = $("chat-messages");
     if (!container) return;
     container.innerHTML = "";
     appendChatMessage(
       "assistant",
-      "Привіт! Я **MonoPilot AI** — персональний фінансовий копілот.\n\nЗапитайте мене про ваші витрати, підписки, аномалії чи прогноз бюджету, або оберіть готовий сценарій вище. Під кожною відповіддю відкривається інспектор **«Під капотом»** із реальними SQL-запитами та викликами інструментів."
+      "Привіт! Я **MonoPilot AI v2.0** — Multi-Agent фінансовий копілот.\n\nЗапитайте мене про витрати, підписки, аномалії, прогноз бюджету чи курс валют. Під час аналізу ви побачите етапи агентів у реальному часі (SSE), а під кожною відповіддю відкривається інспектор **«Під капотом»** із Multi-Agent Pipeline та SQL-запитами."
     );
   }
 
@@ -995,28 +1467,122 @@
     const historySnapshot = state.history.slice(-10);
     setSendingState(true);
 
-    try {
-      const headers = { "Content-Type": "application/json" };
-      const geminiKey = getSessionKey(SESSION_KEYS.GEMINI);
-      if (geminiKey) {
-        headers["X-Gemini-Key"] = geminiKey;
-      }
+    const liveRow = createLiveStreamingRow();
+    const requestPayload = {
+      message,
+      history: historySnapshot,
+      days_context: state.days,
+    };
+    const headers = buildOptionalGeminiHeaders({ "Content-Type": "application/json" });
 
-      const data = await apiRequest("/api/chat", {
+    let donePayload = null;
+    let streamedText = "";
+    const streamedStages = [];
+    const streamedTools = [];
+
+    try {
+      const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          message,
-          history: historySnapshot,
-          days_context: state.days,
-        }),
+        body: JSON.stringify(requestPayload),
       });
 
-      appendChatMessage("assistant", data.answer || "Отримано порожню відповідь.", data);
-      state.history.push({ role: "user", content: message });
-      state.history.push({ role: "assistant", content: data.answer || "" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
 
-      if (data.used_fallback === false) {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        donePayload = await response.json();
+      } else if (response.body && typeof response.body.getReader === "function") {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        const handleFrame = (frameText) => {
+          const parsedFrame = parseSseFrame(frameText);
+          if (!parsedFrame) return;
+          const { event, data } = parsedFrame;
+
+          if (event === "stage") {
+            if (data && typeof data === "object") {
+              streamedStages.push(data);
+              updateStepperForStage(liveRow, data);
+            }
+          } else if (event === "tool") {
+            if (data && typeof data === "object") {
+              streamedTools.push(data);
+              appendLiveToolBadge(liveRow, data);
+            }
+          } else if (event === "delta") {
+            const chunk =
+              typeof data === "string"
+                ? data
+                : data?.text ?? data?.delta ?? data?.content ?? "";
+            if (chunk) {
+              streamedText += String(chunk);
+              const answerBox = liveRow?.querySelector(".live-answer-box");
+              if (answerBox) {
+                answerBox.innerHTML = renderMarkdownSafe(streamedText);
+              }
+              const chatBox = $("chat-messages");
+              if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
+            }
+          } else if (event === "done") {
+            if (data && typeof data === "object") {
+              donePayload = data;
+            }
+          } else if (event === "error") {
+            const detail = data?.detail || data?.message || "SSE stream error";
+            throw new Error(String(detail));
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replaceAll("\r\n", "\n");
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+          for (const frame of parts) {
+            if (frame.trim()) handleFrame(frame);
+          }
+        }
+        buffer += decoder.decode().replaceAll("\r\n", "\n");
+        if (buffer.trim()) {
+          for (const frame of buffer.split("\n\n")) {
+            if (frame.trim()) handleFrame(frame);
+          }
+        }
+      }
+
+      if (!donePayload && streamedText) {
+        donePayload = {
+          answer: streamedText,
+          tool_traces: streamedTools,
+          agent_pipeline: streamedStages,
+          orchestration_mode: "multi-agent",
+          model: state.health?.model || "MonoPilot",
+          total_latency_ms: 0,
+          mode: state.dashboard?.mode || "demo",
+          used_fallback: true,
+        };
+      }
+
+      if (!donePayload) {
+        donePayload = await apiRequest("/api/chat", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestPayload),
+        });
+      }
+
+      finalizeLiveStreamingRow(liveRow, donePayload);
+      const finalAnswer = donePayload.answer || "";
+      state.history.push({ role: "user", content: message });
+      state.history.push({ role: "assistant", content: finalAnswer });
+
+      if (donePayload.used_fallback === false) {
         const aiPill = $("ai-pill");
         if (aiPill) {
           aiPill.className = "status-pill pill-live";
@@ -1024,17 +1590,36 @@
           if (label) label.textContent = "AI Live";
         }
       }
-    } catch (err) {
-      appendChatMessage(
-        "assistant",
-        `Не вдалося отримати відповідь від агента: \`${err.message}\``
-      );
-      showToast(`Помилка чату: ${err.message}`, "err");
+    } catch (streamErr) {
+      try {
+        const fallbackData = await apiRequest("/api/chat", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestPayload),
+        });
+        finalizeLiveStreamingRow(liveRow, fallbackData);
+        state.history.push({ role: "user", content: message });
+        state.history.push({ role: "assistant", content: fallbackData.answer || "" });
+      } catch (err) {
+        if (liveRow) {
+          liveRow.remove();
+        }
+        const errMessage = err?.message || streamErr?.message || "Unknown error";
+        appendChatMessage(
+          "assistant",
+          `Не вдалося отримати відповідь від агента: \`${errMessage}\``
+        );
+        showToast(`Помилка чату: ${errMessage}`, "err");
+      }
     } finally {
       setSendingState(false);
       if (input) input.focus();
     }
   }
+
+  /* =====================================================================
+     Keys, Install, Receipt Vision & AI Evals Modals
+     ===================================================================== */
 
   function setModalFeedback(message, isError = false) {
     const box = $("modal-feedback");
@@ -1104,11 +1689,268 @@
     if (modal) modal.hidden = true;
   }
 
+  function setReceiptFeedback(message, isError = false) {
+    const box = $("receipt-feedback");
+    if (!box) return;
+    if (!message) {
+      box.hidden = true;
+      box.textContent = "";
+      box.className = "modal-feedback";
+      return;
+    }
+    box.hidden = false;
+    box.textContent = message;
+    box.className = `modal-feedback ${isError ? "err" : "ok"}`;
+  }
+
+  function openReceiptModal() {
+    const modal = $("receipt-modal");
+    if (!modal) return;
+    setReceiptFeedback("");
+    modal.hidden = false;
+  }
+
+  function closeReceiptModal() {
+    const modal = $("receipt-modal");
+    if (modal) modal.hidden = true;
+  }
+
+  function renderReceiptResult(res) {
+    const box = $("receipt-result-box");
+    if (!box || !res) return;
+    box.hidden = false;
+
+    const items = Array.isArray(res.items) ? res.items : [];
+    let matchBlock = `<div class="receipt-match-badge is-unmatched">ℹ️ Прямого збігу з транзакцією у SQLite не знайдено.</div>`;
+    if (res.matched_transaction) {
+      const m = res.matched_transaction;
+      const confPct = Math.round(Number(m.confidence || 0) * 100);
+      matchBlock = `
+        <div class="receipt-match-badge is-matched">
+          ✅ <strong>Звірено з SQLite (${confPct}%):</strong> ${escapeHtml(m.description)} ·
+          <span class="mono-num">${escapeHtml(m.tx_date)} · ${formatUAH(Math.abs(Number(m.amount_uah || 0)))}</span>
+          <div style="margin-top:3px;">${escapeHtml(m.reason || "")}</div>
+        </div>
+      `;
+    } else if (res.added_transaction_id) {
+      matchBlock = `
+        <div class="receipt-match-badge is-added">
+          ➕ <strong>Додано транзакцію у SQLite:</strong> ID <code>${escapeHtml(res.added_transaction_id)}</code>
+        </div>
+      `;
+    }
+
+    const itemsRows =
+      items.length === 0
+        ? `<tr><td colspan="3" class="empty-cell">Позиції чека не розпізнано.</td></tr>`
+        : items
+            .map(
+              (item) => `
+                <tr>
+                  <td>${escapeHtml(item.name)}</td>
+                  <td class="mono-num">${formatNumber(item.quantity ?? 1, 2)}</td>
+                  <td class="mono-num align-right">${formatUAH(item.price_uah)}</td>
+                </tr>
+              `
+            )
+            .join("");
+
+    box.innerHTML = `
+      <div class="receipt-header-row">
+        <span class="receipt-merchant">${escapeHtml(res.merchant || "Чек")}</span>
+        <span class="receipt-total mono-num">${formatUAH(res.total_uah)}</span>
+      </div>
+      <div class="receipt-meta-row">
+        <span class="category-pill">${escapeHtml(res.category || "Інше")}</span>
+        <span class="mono-num">📅 ${escapeHtml(res.receipt_date || "—")}</span>
+        <span class="trace-badge">${escapeHtml(res.model || "vision")}</span>
+        <span class="trace-badge">${Math.round(Number(res.latency_ms || 0))} ms</span>
+        ${res.used_fallback ? `<span class="trace-badge trace-badge-warn">Demo/Fallback</span>` : `<span class="trace-badge trace-badge-ok">Gemini Vision</span>`}
+      </div>
+      ${matchBlock}
+      <div class="receipt-items-wrap">
+        <table class="receipt-items-table">
+          <thead>
+            <tr>
+              <th>Позиція</th>
+              <th>К-сть</th>
+              <th class="align-right">Сума</th>
+            </tr>
+          </thead>
+          <tbody>${itemsRows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async function runReceiptScan(isDemo) {
+    const demoBtn = $("scan-demo-receipt-btn");
+    const photoBtn = $("scan-receipt-btn");
+    const autoAdd = Boolean($("receipt-auto-add")?.checked);
+    const fileInput = $("receipt-file-input");
+
+    if (!isDemo && !fileInput?.files?.[0]) {
+      setReceiptFeedback("Оберіть фото чека або натисніть «✨ Демо-чек Сільпо».", true);
+      return;
+    }
+
+    if (demoBtn) demoBtn.disabled = true;
+    if (photoBtn) photoBtn.disabled = true;
+    setReceiptFeedback(isDemo ? "Сканування демо-чека Сільпо..." : "Аналіз фото чека через Vision AI...");
+
+    try {
+      const headers = buildOptionalGeminiHeaders();
+      let res;
+      if (isDemo) {
+        res = await apiRequest(`/api/receipts/scan-demo?auto_add=${autoAdd ? "true" : "false"}`, {
+          method: "POST",
+          headers,
+        });
+      } else {
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+        res = await apiRequest(`/api/receipts/scan?auto_add=${autoAdd ? "true" : "false"}`, {
+          method: "POST",
+          headers,
+          body: formData,
+        });
+      }
+
+      renderReceiptResult(res);
+      setReceiptFeedback(`Чек «${res.merchant}» успішно розпізнано (${formatUAH(res.total_uah)}).`);
+      if (res.added_transaction_id) {
+        showToast(`Транзакцію з чека додано в SQLite (${formatUAH(res.total_uah)})`, "ok");
+        await refreshAll();
+      }
+    } catch (err) {
+      setReceiptFeedback(`Помилка сканування чека: ${err.message}`, true);
+      showToast(`Чек AI помилка: ${err.message}`, "err");
+    } finally {
+      if (demoBtn) demoBtn.disabled = false;
+      if (photoBtn) photoBtn.disabled = false;
+    }
+  }
+
+  function renderEvalReport(report) {
+    const numEl = $("eval-numeric-pct");
+    const toolEl = $("eval-tool-pct");
+    const secEl = $("eval-security-pct");
+    const msEl = $("eval-avg-ms");
+    const metaEl = $("eval-run-meta");
+    const tbody = $("evals-tbody");
+
+    if (!report) {
+      if (numEl) numEl.textContent = "—";
+      if (toolEl) toolEl.textContent = "—";
+      if (secEl) secEl.textContent = "—";
+      if (msEl) msEl.textContent = "—";
+      if (metaEl) metaEl.textContent = "Ще немає збережених прогонів. Натисніть «▶ Запустити 20 тестів».";
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">Немає збережених результатів. Натисніть запуск для перевірки 20 кейсів.</td></tr>`;
+      }
+      return;
+    }
+
+    if (numEl) numEl.textContent = `${formatNumber(report.numeric_accuracy_pct, 1)}%`;
+    if (toolEl) toolEl.textContent = `${formatNumber(report.tool_accuracy_pct, 1)}%`;
+    if (secEl) secEl.textContent = `${formatNumber(report.security_block_rate_pct, 1)}%`;
+    if (msEl) msEl.textContent = `${formatNumber(report.avg_latency_ms, 1)} ms`;
+    if (metaEl) {
+      metaEl.textContent = `Run ${report.run_id} · Mode: ${report.mode} · Passed: ${report.passed_cases}/${report.total_cases}`;
+    }
+
+    if (!tbody) return;
+    const cases = Array.isArray(report.cases) ? report.cases : [];
+    if (cases.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">Список тест-кейсів порожній.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = cases
+      .map((c) => {
+        const suiteCls =
+          c.suite === "numeric"
+            ? "suite-numeric"
+            : c.suite === "tool"
+              ? "suite-tool"
+              : "suite-redteam";
+        const statusCls = c.passed ? "eval-status-pass" : "eval-status-fail";
+        const statusText = c.passed ? "PASS" : "FAIL";
+        const toolsText =
+          Array.isArray(c.tools_called) && c.tools_called.length > 0
+            ? c.tools_called.join(", ")
+            : "—";
+
+        return `
+          <tr>
+            <td class="mono-num">${escapeHtml(c.case_id)}</td>
+            <td><span class="suite-badge ${suiteCls}">${escapeHtml(c.suite)}</span></td>
+            <td>${escapeHtml(c.prompt)}</td>
+            <td><span class="eval-status-pill ${statusCls}">${statusText}</span></td>
+            <td>
+              <div class="mono-num">${Number(c.latency_ms || 0).toFixed(1)} ms · tools: ${escapeHtml(toolsText)}</div>
+              <div class="kpi-sub">${escapeHtml(c.reason || "")}</div>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  async function loadLatestEvals() {
+    const metaEl = $("eval-run-meta");
+    if (metaEl) metaEl.textContent = "Завантаження останнього звіту...";
+    try {
+      const report = await apiRequest("/api/evals/latest");
+      renderEvalReport(report);
+    } catch (err) {
+      if (metaEl) metaEl.textContent = `Помилка завантаження: ${err.message}`;
+    }
+  }
+
+  async function runEvalsBenchmark(mode = "deterministic") {
+    const detBtn = $("run-evals-btn");
+    const liveBtn = $("run-evals-live-btn");
+    const metaEl = $("eval-run-meta");
+    if (detBtn) detBtn.disabled = true;
+    if (liveBtn) liveBtn.disabled = true;
+    if (metaEl) metaEl.textContent = `Виконання 20 тест-кейсів (${mode})...`;
+
+    try {
+      const headers = buildOptionalGeminiHeaders();
+      const report = await apiRequest(`/api/evals/run?mode=${encodeURIComponent(mode)}`, {
+        method: "POST",
+        headers,
+      });
+      renderEvalReport(report);
+      showToast(
+        `Benchmark завершено: ${report.passed_cases}/${report.total_cases} тестів пройдено`,
+        report.passed_cases === report.total_cases ? "ok" : "err"
+      );
+    } catch (err) {
+      if (metaEl) metaEl.textContent = `Помилка запуску: ${err.message}`;
+      showToast(`Eval Lab помилка: ${err.message}`, "err");
+    } finally {
+      if (detBtn) detBtn.disabled = false;
+      if (liveBtn) liveBtn.disabled = false;
+    }
+  }
+
+  function openEvalsModal() {
+    const modal = $("evals-modal");
+    if (!modal) return;
+    modal.hidden = false;
+    loadLatestEvals();
+  }
+
+  function closeEvalsModal() {
+    const modal = $("evals-modal");
+    if (modal) modal.hidden = true;
+  }
+
   async function resetDemoData() {
-    const btns = [$("reset-demo-btn"), $("qa-demo-btn")].filter(Boolean);
-    btns.forEach((b) => {
-      b.disabled = true;
-    });
+    const btn = $("reset-demo-btn");
+    if (btn) btn.disabled = true;
     try {
       const res = await apiRequest("/api/data/demo", { method: "POST" });
       showToast(res.message || `Завантажено ${res.total_in_db} демо-транзакцій`, "ok");
@@ -1116,9 +1958,7 @@
     } catch (err) {
       showToast(`Помилка скидання demo: ${err.message}`, "err");
     } finally {
-      btns.forEach((b) => {
-        b.disabled = false;
-      });
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -1154,9 +1994,9 @@
     });
 
     // Quick Action Pills
+    $("qa-receipt-btn")?.addEventListener("click", openReceiptModal);
     $("qa-sync-btn")?.addEventListener("click", () => openKeysModal("mono-token-input"));
     $("qa-csv-btn")?.addEventListener("click", () => openKeysModal("csv-file-input"));
-    $("qa-demo-btn")?.addEventListener("click", resetDemoData);
     $("qa-ask-ai-btn")?.addEventListener("click", () => {
       if (window.innerWidth <= 860) {
         setMobileTab("chat");
@@ -1261,10 +2101,36 @@
       }
     });
 
+    // Receipt modal controls
+    $("close-receipt-modal-x")?.addEventListener("click", closeReceiptModal);
+    $("close-receipt-modal-btn")?.addEventListener("click", closeReceiptModal);
+    $("receipt-modal")?.addEventListener("click", (e) => {
+      if (e.target === $("receipt-modal")) {
+        closeReceiptModal();
+      }
+    });
+    $("scan-demo-receipt-btn")?.addEventListener("click", () => runReceiptScan(true));
+    $("scan-receipt-btn")?.addEventListener("click", () => runReceiptScan(false));
+
+    // Evals modal controls
+    $("open-evals-btn")?.addEventListener("click", openEvalsModal);
+    $("close-evals-modal-x")?.addEventListener("click", closeEvalsModal);
+    $("close-evals-modal-btn")?.addEventListener("click", closeEvalsModal);
+    $("evals-modal")?.addEventListener("click", (e) => {
+      if (e.target === $("evals-modal")) {
+        closeEvalsModal();
+      }
+    });
+    $("run-evals-btn")?.addEventListener("click", () => runEvalsBenchmark("deterministic"));
+    $("run-evals-live-btn")?.addEventListener("click", () => runEvalsBenchmark("live"));
+
+    // Escape closes any open modal
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         if (!$("keys-modal")?.hidden) closeKeysModal();
         if (!$("install-modal")?.hidden) closeInstallModal();
+        if (!$("receipt-modal")?.hidden) closeReceiptModal();
+        if (!$("evals-modal")?.hidden) closeEvalsModal();
       }
     });
 
@@ -1363,6 +2229,61 @@
       } finally {
         if (uploadBtn) uploadBtn.disabled = false;
       }
+    });
+
+    // Mono Jars & What-If Simulator bindings
+    $("toggle-new-jar-btn")?.addEventListener("click", () => {
+      const form = $("new-jar-form");
+      if (!form) return;
+      form.hidden = !form.hidden;
+      if (!form.hidden) {
+        $("jar-name-input")?.focus();
+      }
+    });
+
+    $("new-jar-form")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      createJarFromForm();
+    });
+
+    $("jars-grid")?.addEventListener("click", (e) => {
+      const delBtn = e.target.closest(".delete-jar-btn");
+      if (delBtn) {
+        e.stopPropagation();
+        const jarId = delBtn.getAttribute("data-jar-id");
+        if (jarId) deleteJarById(jarId);
+        return;
+      }
+      const jarCard = e.target.closest(".jar-card");
+      const jarId = jarCard?.getAttribute("data-jar-id");
+      if (jarId) {
+        state.selectedJarId = jarId;
+        renderJars();
+        simulateWhatIf();
+      }
+    });
+
+    $("whatif-jar-select")?.addEventListener("change", (e) => {
+      state.selectedJarId = e.target.value || "";
+      renderJars();
+      simulateWhatIf();
+    });
+
+    $("cut-cafe-slider")?.addEventListener("input", (e) => {
+      const badge = $("cut-cafe-val");
+      if (badge) badge.textContent = `-${e.target.value}%`;
+      scheduleWhatIfSimulation();
+    });
+
+    $("cut-hobby-slider")?.addEventListener("input", (e) => {
+      const badge = $("cut-hobby-val");
+      if (badge) badge.textContent = `-${e.target.value}%`;
+      scheduleWhatIfSimulation();
+    });
+
+    $("whatif-extra-input")?.addEventListener("input", scheduleWhatIfSimulation);
+    document.querySelectorAll(".whatif-sub-toggle").forEach((toggle) => {
+      toggle.addEventListener("change", simulateWhatIf);
     });
 
     // Interactive category budgets delegation

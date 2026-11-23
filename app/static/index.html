@@ -50,7 +50,7 @@
             <h1>MonoPilot AI</h1>
             <span class="tech-badge">Gemini 3.8 • Mono API</span>
           </div>
-          <p class="brand-subtitle">AI фінансовий копілот із Read-Only SQL аудитом</p>
+          <p class="brand-subtitle">Multi-Agent AI копілот із Read-Only SQL аудитом</p>
         </div>
       </div>
 
@@ -74,13 +74,17 @@
       </div>
 
       <div class="topbar-actions">
+        <button id="open-evals-btn" type="button" class="btn btn-secondary btn-sm">
+          <span>🧪</span>
+          <span>Evals</span>
+        </button>
         <button id="install-app-btn" type="button" class="btn btn-coral-soft btn-sm">
           <span>📱</span>
           <span>Додаток</span>
         </button>
         <button id="open-keys-btn" type="button" class="btn btn-secondary btn-sm">
           <span>🔑</span>
-          <span>Ключі / CSV</span>
+          <span>Ключі</span>
         </button>
         <button id="reset-demo-btn" type="button" class="btn btn-ghost btn-sm">
           <span>↺</span>
@@ -139,6 +143,10 @@
             </div>
 
             <div class="quick-actions-row" aria-label="Швидкі дії">
+              <button id="qa-receipt-btn" type="button" class="qa-btn">
+                <span class="qa-icon">📷</span>
+                <span>Чек AI</span>
+              </button>
               <button id="qa-sync-btn" type="button" class="qa-btn">
                 <span class="qa-icon">⚡</span>
                 <span>Monobank</span>
@@ -150,10 +158,6 @@
               <button id="qa-ask-ai-btn" type="button" class="qa-btn">
                 <span class="qa-icon">✦</span>
                 <span>Спитати AI</span>
-              </button>
-              <button id="qa-demo-btn" type="button" class="qa-btn">
-                <span class="qa-icon">↺</span>
-                <span>Demo дані</span>
               </button>
             </div>
           </div>
@@ -251,6 +255,115 @@
           </div>
         </div>
 
+        <!-- Mono Jars & What-If Simulator (Budgets Tab on Mobile) -->
+        <article id="jars-section" class="card jars-card" data-mobile-section="budgets">
+          <div class="card-header">
+            <div>
+              <h3>🏺 Мої Банки (Mono Jars)</h3>
+              <p class="panel-subtitle">Цілі накопичення та інтерактивний What-If симулятор економії</p>
+            </div>
+            <button id="toggle-new-jar-btn" type="button" class="btn btn-secondary btn-sm">+ Нова Банка</button>
+          </div>
+
+          <form id="new-jar-form" class="new-jar-form" hidden>
+            <div class="jar-form-field jar-form-icon">
+              <label for="jar-icon-input">Іконка</label>
+              <select id="jar-icon-input" aria-label="Іконка банки">
+                <option value="🏺" selected>🏺</option>
+                <option value="💻">💻</option>
+                <option value="🛡️">🛡️</option>
+                <option value="🏔️">🏔️</option>
+                <option value="✈️">✈️</option>
+                <option value="🚗">🚗</option>
+                <option value="🎓">🎓</option>
+              </select>
+            </div>
+            <div class="jar-form-field jar-form-name">
+              <label for="jar-name-input">Назва цілі</label>
+              <input id="jar-name-input" type="text" required maxlength="60" placeholder="Напр., iPad Air або Резерв" />
+            </div>
+            <div class="jar-form-field">
+              <label for="jar-target-input">Ціль (₴)</label>
+              <input id="jar-target-input" type="number" required min="100" step="100" placeholder="25000" />
+            </div>
+            <div class="jar-form-field">
+              <label for="jar-current-input">Накопичено (₴)</label>
+              <input id="jar-current-input" type="number" min="0" step="100" value="0" />
+            </div>
+            <div class="jar-form-field">
+              <label for="jar-monthly-input">План / міс (₴)</label>
+              <input id="jar-monthly-input" type="number" min="0" step="100" value="3000" />
+            </div>
+            <div class="jar-form-submit">
+              <button id="jar-save-btn" type="submit" class="btn btn-primary btn-sm">Створити</button>
+            </div>
+          </form>
+
+          <div id="jars-grid" class="jars-grid">
+            <p class="empty-state">Завантаження банок...</p>
+          </div>
+
+          <div id="whatif-panel" class="whatif-panel">
+            <div class="whatif-header">
+              <div>
+                <h4>⚡ What-If Симулятор накопичень</h4>
+                <p class="panel-subtitle">Перевірте, на скільки місяців швидше закриється обрана Банка</p>
+              </div>
+              <div class="whatif-target-wrap">
+                <label for="whatif-jar-select">Цільова Банка:</label>
+                <select id="whatif-jar-select" aria-label="Цільова Банка для симуляції"></select>
+              </div>
+            </div>
+
+            <div class="whatif-controls-grid">
+              <div class="whatif-slider-box">
+                <div class="whatif-slider-top">
+                  <label for="cut-cafe-slider">☕ Кафе та ресторани (скорочення)</label>
+                  <span id="cut-cafe-val" class="mono-num whatif-val-badge">-20%</span>
+                </div>
+                <input id="cut-cafe-slider" type="range" min="0" max="80" step="5" value="20" />
+              </div>
+
+              <div class="whatif-slider-box">
+                <div class="whatif-slider-top">
+                  <label for="cut-hobby-slider">🛍️ Покупки та хобі (скорочення)</label>
+                  <span id="cut-hobby-val" class="mono-num whatif-val-badge">-20%</span>
+                </div>
+                <input id="cut-hobby-slider" type="range" min="0" max="80" step="5" value="20" />
+              </div>
+            </div>
+
+            <div class="whatif-extras-row">
+              <div class="whatif-subs-group">
+                <span class="whatif-group-label">Скасувати підписки:</span>
+                <div class="whatif-sub-chips">
+                  <label class="whatif-chip">
+                    <input type="checkbox" class="whatif-sub-toggle" value="Netflix.com" />
+                    <span>Netflix.com</span>
+                  </label>
+                  <label class="whatif-chip">
+                    <input type="checkbox" class="whatif-sub-toggle" value="Spotify" />
+                    <span>Spotify</span>
+                  </label>
+                  <label class="whatif-chip">
+                    <input type="checkbox" class="whatif-sub-toggle" value="YouTube Premium" />
+                    <span>YouTube Premium</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="whatif-extra-input-wrap">
+                <label for="whatif-extra-input">+ Додатково / міс (₴)</label>
+                <input id="whatif-extra-input" type="number" min="0" step="500" value="0" />
+              </div>
+            </div>
+
+            <div id="whatif-result" class="whatif-result" aria-live="polite">
+              <span class="empty-state">Розрахунок сценарію накопичення...</span>
+            </div>
+          </div>
+        </article>
+
         <!-- Budgets Tab Section -->
         <article class="card budgets-card" data-mobile-section="budgets">
           <div class="card-header">
@@ -304,7 +417,7 @@
         <div class="chat-header">
           <div>
             <h2>AI Фінансовий Агент</h2>
-            <p class="panel-subtitle">Кожна цифра підтверджена tool call &amp; SQL</p>
+            <p class="panel-subtitle">Multi-Agent Pipeline · Live SSE &amp; SQL Audit</p>
           </div>
           <button id="clear-chat-btn" type="button" class="btn btn-ghost btn-sm" title="Очистити історію чату">
             Очистити
@@ -496,6 +609,109 @@
       <div class="modal-actions">
         <button id="trigger-pwa-install-btn" type="button" class="btn btn-primary" hidden>Встановити додаток зараз</button>
         <button id="close-install-modal-btn" type="button" class="btn btn-outline">Зрозуміло</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Receipt Vision Scanner Modal -->
+  <div id="receipt-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="receipt-modal-title">
+    <div class="modal-card card">
+      <div class="modal-header">
+        <h3 id="receipt-modal-title">📷 Чек AI — Сканер та звірка з SQLite</h3>
+        <button id="close-receipt-modal-x" type="button" class="icon-btn" aria-label="Закрити сканер чеків">✕</button>
+      </div>
+
+      <p class="modal-notice">
+        Завантажте фото паперового чека або протестуйте вбудований демо-чек Сільпо. Gemini Vision витягує позиції у
+        строгу JSON-схему, звіряє покупку з випискою SQLite та за потреби додає нову транзакцію.
+      </p>
+
+      <div class="form-group">
+        <label for="receipt-file-input">Фото чека (PNG / JPG / WEBP)</label>
+        <input id="receipt-file-input" type="file" accept="image/*" capture="environment" />
+        <label class="checkbox-inline">
+          <input id="receipt-auto-add" type="checkbox" />
+          <span>Автоматично додати транзакцію в SQLite, якщо збіг не знайдено</span>
+        </label>
+      </div>
+
+      <div class="receipt-scan-actions">
+        <button id="scan-demo-receipt-btn" type="button" class="btn btn-secondary">✨ Демо-чек Сільпо</button>
+        <button id="scan-receipt-btn" type="button" class="btn btn-primary">📷 Сканувати фото</button>
+      </div>
+
+      <div id="receipt-feedback" class="modal-feedback" hidden></div>
+
+      <div id="receipt-result-box" class="receipt-result-box" hidden></div>
+
+      <div class="modal-actions">
+        <button id="close-receipt-modal-btn" type="button" class="btn btn-outline">Закрити</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Eval & Red-Team Security Lab Modal -->
+  <div id="evals-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="evals-modal-title">
+    <div class="modal-card modal-card-wide card">
+      <div class="modal-header">
+        <h3 id="evals-modal-title">🧪 AI Eval &amp; Red-Team Security Lab</h3>
+        <button id="close-evals-modal-x" type="button" class="icon-btn" aria-label="Закрити AI Eval Lab">✕</button>
+      </div>
+
+      <p class="modal-notice">
+        Golden &amp; Red-Team Benchmark (20 кейсів): автоматично оцінює точність числових відповідей
+        (<strong>Numeric Accuracy</strong>), коректність виклику інструментів (<strong>Tool Accuracy</strong>) та
+        стійкість до Prompt / SQL Injection атак (<strong>Security Block Rate</strong>).
+      </p>
+
+      <div class="evals-toolbar">
+        <div class="evals-run-buttons">
+          <button id="run-evals-btn" type="button" class="btn btn-primary btn-sm">▶ Запустити 20 тестів</button>
+          <button id="run-evals-live-btn" type="button" class="btn btn-secondary btn-sm">⚡ Live LLM Mode</button>
+        </div>
+        <div id="eval-run-meta" class="eval-run-meta mono-num">Оберіть запуск або перегляньте останній звіт</div>
+      </div>
+
+      <div class="eval-kpi-grid">
+        <div class="eval-kpi-card">
+          <span class="eval-kpi-label">Numeric Accuracy</span>
+          <span id="eval-numeric-pct" class="eval-kpi-val mono-num">—</span>
+        </div>
+        <div class="eval-kpi-card">
+          <span class="eval-kpi-label">Tool Accuracy</span>
+          <span id="eval-tool-pct" class="eval-kpi-val mono-num">—</span>
+        </div>
+        <div class="eval-kpi-card">
+          <span class="eval-kpi-label">Security Block Rate</span>
+          <span id="eval-security-pct" class="eval-kpi-val mono-num">—</span>
+        </div>
+        <div class="eval-kpi-card">
+          <span class="eval-kpi-label">Avg Latency</span>
+          <span id="eval-avg-ms" class="eval-kpi-val mono-num">—</span>
+        </div>
+      </div>
+
+      <div class="evals-table-scroll">
+        <table class="evals-table">
+          <thead>
+            <tr>
+              <th>Case ID</th>
+              <th>Suite</th>
+              <th>Запит</th>
+              <th>Статус</th>
+              <th>Latency / Деталі</th>
+            </tr>
+          </thead>
+          <tbody id="evals-tbody">
+            <tr>
+              <td colspan="5" class="empty-cell">Завантаження результатів benchmark...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="modal-actions">
+        <button id="close-evals-modal-btn" type="button" class="btn btn-outline">Закрити</button>
       </div>
     </div>
   </div>

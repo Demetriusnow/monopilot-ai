@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
@@ -10,7 +11,17 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.schemas import TransactionRecord
+from app.schemas import EvalRunReport, TransactionRecord
+
+_REQUIRED_TABLES: frozenset[str] = frozenset(
+    {"transactions", "sync_meta", "budgets", "jars", "receipts", "eval_runs"}
+)
+
+DEFAULT_JARS: tuple[tuple[str, str, str, float, float, float], ...] = (
+    ("jar_macbook", "MacBook Pro M4", "💻", 85000.0, 28500.0, 7500.0),
+    ("jar_cushion", "Фінансова подушка", "🛡️", 110000.0, 46000.0, 9000.0),
+    ("jar_travel", "Відпустка у Карпатах", "🏔️", 24000.0, 9500.0, 3000.0),
+)
 
 DEFAULT_BUDGETS: dict[str, float] = {
     "Продукти": 9500.0,
@@ -78,10 +89,11 @@ def _ensure_db_ready(db_path: str | None = None) -> Path:
         return resolved
 
     with closing(_connect_rw(str(resolved))) as conn:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'"
-        ).fetchone()
-    if row is None:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        existing = {str(r["name"]) for r in rows}
+    if not _REQUIRED_TABLES.issubset(existing):
         init_db(db_path=str(resolved))
     return resolved
 
@@ -153,13 +165,53 @@ def init_db(db_path: str | None = None) -> None:
                 category TEXT PRIMARY KEY,
                 monthly_limit_uah REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS jars (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                icon TEXT NOT NULL,
+                target_uah REAL NOT NULL,
+                current_uah REAL NOT NULL,
+                monthly_contribution_uah REAL NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS receipts (
+                id TEXT PRIMARY KEY,
+                merchant TEXT NOT NULL,
+                receipt_date TEXT NOT NULL,
+                total_uah REAL NOT NULL,
+                category TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                matched_tx_id TEXT,
+                match_confidence REAL NOT NULL DEFAULT 0.0,
+                added_tx_id TEXT,
+                raw_model TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS eval_runs (
+                id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                total_cases INTEGER NOT NULL,
+                passed_cases INTEGER NOT NULL,
+                numeric_accuracy_pct REAL NOT NULL,
+                tool_accuracy_pct REAL NOT NULL,
+                security_block_rate_pct REAL NOT NULL,
+                avg_latency_ms REAL NOT NULL,
+                details_json TEXT NOT NULL
+            );
             """
         )
         budget_count = conn.execute("SELECT COUNT(*) FROM budgets").fetchone()[0]
+        jar_count = conn.execute("SELECT COUNT(*) FROM jars").fetchone()[0]
         conn.commit()
 
     if budget_count == 0:
         seed_default_budgets(db_path=db_path)
+    if jar_count == 0:
+        seed_default_jars(db_path=db_path)
 
 
 def seed_default_budgets(db_path: str | None = None) -> None:
@@ -456,3 +508,188 @@ def execute_safe_select(
         "truncated": truncated,
         "executed_sql": cleaned_sql,
     }
+
+
+def seed_default_jars(db_path: str | None = None) -> None:
+    """Seed realistic Ukrainian Mono Jars ('Банки') if the jars table is empty."""
+    now_ts = int(time.time())
+    with closing(_connect_rw(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jars (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                icon TEXT NOT NULL,
+                target_uah REAL NOT NULL,
+                current_uah REAL NOT NULL,
+                monthly_contribution_uah REAL NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO jars (
+                id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [(jid, name, icon, target, curr, monthly, now_ts) for (jid, name, icon, target, curr, monthly) in DEFAULT_JARS],
+        )
+        conn.commit()
+
+
+def get_jars(db_path: str | None = None) -> list[dict[str, Any]]:
+    """Return all configured Mono Jars ordered by creation time and name."""
+    resolved = _ensure_db_ready(db_path)
+    with closing(_connect_rw(str(resolved))) as conn:
+        rows = conn.execute(
+            "SELECT id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at "
+            "FROM jars ORDER BY created_at ASC, name ASC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_jar(
+    jar_id: str,
+    name: str,
+    icon: str,
+    target_uah: float,
+    current_uah: float,
+    monthly_contribution_uah: float,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Create or update a Mono Savings Jar and return all jars."""
+    resolved = _ensure_db_ready(db_path)
+    now_ts = int(time.time())
+    with closing(_connect_rw(str(resolved))) as conn:
+        conn.execute(
+            """
+            INSERT INTO jars (
+                id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                icon = excluded.icon,
+                target_uah = excluded.target_uah,
+                current_uah = excluded.current_uah,
+                monthly_contribution_uah = excluded.monthly_contribution_uah
+            """,
+            (
+                jar_id,
+                name.strip(),
+                (icon or "🏺").strip() or "🏺",
+                round(float(target_uah), 2),
+                round(float(current_uah), 2),
+                round(float(monthly_contribution_uah), 2),
+                now_ts,
+            ),
+        )
+        conn.commit()
+    return get_jars(db_path=str(resolved))
+
+
+def delete_jar(jar_id: str, db_path: str | None = None) -> bool:
+    """Delete a Mono Jar by ID and return True if a row was removed."""
+    resolved = _ensure_db_ready(db_path)
+    with closing(_connect_rw(str(resolved))) as conn:
+        cur = conn.execute("DELETE FROM jars WHERE id = ?", (jar_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def save_receipt_record(record: dict[str, Any], db_path: str | None = None) -> None:
+    """Persist a scanned receipt summary and reconciliation metadata in SQLite."""
+    resolved = _ensure_db_ready(db_path)
+    now_ts = int(record.get("created_at") or time.time())
+    items_raw = record.get("items", [])
+    items_json = items_raw if isinstance(items_raw, str) else json.dumps(items_raw, ensure_ascii=False)
+    with closing(_connect_rw(str(resolved))) as conn:
+        conn.execute(
+            """
+            INSERT INTO receipts (
+                id, merchant, receipt_date, total_uah, category,
+                items_json, matched_tx_id, match_confidence, added_tx_id,
+                raw_model, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                matched_tx_id = excluded.matched_tx_id,
+                match_confidence = excluded.match_confidence,
+                added_tx_id = excluded.added_tx_id
+            """,
+            (
+                str(record["id"]),
+                str(record["merchant"]),
+                str(record["receipt_date"]),
+                round(float(record["total_uah"]), 2),
+                str(record["category"]),
+                items_json,
+                record.get("matched_tx_id"),
+                float(record.get("match_confidence", 0.0)),
+                record.get("added_tx_id"),
+                str(record.get("raw_model", "")),
+                now_ts,
+            ),
+        )
+        conn.commit()
+
+
+def get_receipt_records(limit: int = 20, db_path: str | None = None) -> list[dict[str, Any]]:
+    """Return recently scanned receipts ordered newest-first."""
+    resolved = _ensure_db_ready(db_path)
+    with closing(_connect_rw(str(resolved))) as conn:
+        rows = conn.execute(
+            "SELECT * FROM receipts ORDER BY created_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["items"] = json.loads(item.pop("items_json", "[]"))
+        except json.JSONDecodeError:
+            item["items"] = []
+        out.append(item)
+    return out
+
+
+def save_eval_run(report: EvalRunReport, db_path: str | None = None) -> None:
+    """Persist an EvalRunReport JSON scorecard into SQLite."""
+    resolved = _ensure_db_ready(db_path)
+    details_json = report.model_dump_json()
+    with closing(_connect_rw(str(resolved))) as conn:
+        conn.execute(
+            """
+            INSERT INTO eval_runs (
+                id, created_at, mode, total_cases, passed_cases,
+                numeric_accuracy_pct, tool_accuracy_pct, security_block_rate_pct,
+                avg_latency_ms, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                details_json = excluded.details_json
+            """,
+            (
+                report.run_id,
+                report.created_at,
+                report.mode,
+                report.total_cases,
+                report.passed_cases,
+                report.numeric_accuracy_pct,
+                report.tool_accuracy_pct,
+                report.security_block_rate_pct,
+                report.avg_latency_ms,
+                details_json,
+            ),
+        )
+        conn.commit()
+
+
+def get_latest_eval_run(db_path: str | None = None) -> EvalRunReport | None:
+    """Load the most recent stored EvalRunReport, if any exists."""
+    resolved = _ensure_db_ready(db_path)
+    with closing(_connect_rw(str(resolved))) as conn:
+        row = conn.execute(
+            "SELECT details_json FROM eval_runs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return None
+    return EvalRunReport.model_validate_json(str(row["details_json"]))
