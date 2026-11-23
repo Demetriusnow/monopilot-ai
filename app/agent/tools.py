@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.data.database import execute_safe_select
-from app.schemas import ToolTrace
+from app.schemas import ToolTrace, WhatIfRequest
 from app.services.analytics import (
     detect_anomalies,
     detect_subscriptions,
@@ -141,6 +141,58 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
             "required": [],
         },
     },
+    {
+        "type": "function",
+        "name": "get_mono_jars",
+        "description": (
+            "Retrieve all Monobank savings jars ('Банки') with current balance, target UAH, "
+            "monthly contribution, completion percentage, remaining UAH, and estimated months to goal."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "type": "function",
+        "name": "simulate_what_if_savings",
+        "description": (
+            "Simulate a What-If monthly savings scenario by cutting spending categories by a percentage, "
+            "cancelling recurring subscriptions, and/or adding extra monthly UAH contributions toward a Mono Jar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "jar_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional target Mono Jar ID (e.g. 'jar_macbook', 'jar_cushion', 'jar_travel')."
+                    ),
+                },
+                "category_cuts_pct": {
+                    "type": "object",
+                    "description": (
+                        "Optional map of Ukrainian category name to percentage spending cut (0-100), "
+                        "e.g. {'Кафе та ресторани': 30, 'Покупки та хобі': 20}."
+                    ),
+                },
+                "cancel_subscriptions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of recurring subscription merchant names to cancel, "
+                        "e.g. ['Netflix.com', 'Spotify']."
+                    ),
+                },
+                "extra_monthly_uah": {
+                    "type": "number",
+                    "description": "Optional additional monthly contribution in UAH (default: 0.0).",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -204,6 +256,45 @@ def _build_result_preview(data: Any, max_chars: int = 3000, max_items: int = 10)
     return data
 
 
+def _build_what_if_request(args: dict[str, Any]) -> WhatIfRequest:
+    """Normalize tool call arguments into a validated WhatIfRequest payload."""
+    jar_id_raw = args.get("jar_id")
+    jar_id = str(jar_id_raw).strip() if jar_id_raw is not None and str(jar_id_raw).strip() else None
+
+    cuts_raw = args.get("category_cuts_pct")
+    if isinstance(cuts_raw, str):
+        try:
+            cuts_raw = json.loads(cuts_raw)
+        except json.JSONDecodeError:
+            cuts_raw = {}
+    category_cuts_pct: dict[str, float] = {}
+    if isinstance(cuts_raw, dict):
+        for k, v in cuts_raw.items():
+            if v is not None:
+                category_cuts_pct[str(k).strip()] = float(v)
+
+    cancel_raw = args.get("cancel_subscriptions")
+    if isinstance(cancel_raw, str):
+        try:
+            parsed_cancel = json.loads(cancel_raw)
+            cancel_raw = parsed_cancel if isinstance(parsed_cancel, list) else [cancel_raw]
+        except json.JSONDecodeError:
+            cancel_raw = [part.strip() for part in cancel_raw.split(",") if part.strip()]
+    cancel_subscriptions: list[str] = []
+    if isinstance(cancel_raw, list):
+        cancel_subscriptions = [str(item).strip() for item in cancel_raw if str(item).strip()]
+
+    extra_raw = args.get("extra_monthly_uah")
+    extra_monthly_uah = float(extra_raw) if extra_raw is not None else 0.0
+
+    return WhatIfRequest(
+        jar_id=jar_id,
+        category_cuts_pct=category_cuts_pct,
+        cancel_subscriptions=cancel_subscriptions,
+        extra_monthly_uah=extra_monthly_uah,
+    )
+
+
 async def execute_tool(
     name: str,
     arguments: dict[str, Any] | None = None,
@@ -259,6 +350,15 @@ async def execute_tool(
             )
         elif name == "get_monobank_currency_rates":
             raw_result = await fetch_currency_rates(db_path=db_path)
+        elif name == "get_mono_jars":
+            from app.services.jars_simulator import list_jars_enriched
+
+            raw_result = await asyncio.to_thread(list_jars_enriched, db_path=db_path)
+        elif name == "simulate_what_if_savings":
+            from app.services.jars_simulator import simulate_what_if
+
+            req = _build_what_if_request(args)
+            raw_result = await asyncio.to_thread(simulate_what_if, req, db_path=db_path)
         else:
             raise ValueError(f"Unknown tool requested: {name}")
 

@@ -129,6 +129,16 @@ class ToolTrace(BaseModel):
     status: str = "ok"
 
 
+class AgentStageTrace(BaseModel):
+    """Single stage inside the Multi-Agent orchestration pipeline."""
+
+    agent_role: Literal["planner", "sql_analyst", "risk_auditor", "savings_advisor", "synthesizer"]
+    label: str
+    summary: str
+    duration_ms: float
+    status: str = "ok"
+
+
 class ChatMessage(BaseModel):
     """Single message in conversation history."""
 
@@ -145,10 +155,12 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """Agent answer alongside full tool execution traces."""
+    """Agent answer alongside full tool execution traces and multi-agent pipeline."""
 
     answer: str
     tool_traces: list[ToolTrace] = Field(default_factory=list)
+    agent_pipeline: list[AgentStageTrace] = Field(default_factory=list)
+    orchestration_mode: str = "multi-agent"
     model: str
     total_latency_ms: float
     mode: str
@@ -194,3 +206,128 @@ class HealthResponse(BaseModel):
     gemini_configured: bool
     active_mode: str
     total_transactions: int
+
+
+class ReceiptLineItem(BaseModel):
+    """Single line item parsed from a scanned store receipt."""
+
+    name: str
+    quantity: float = 1.0
+    price_uah: float
+
+
+class ReceiptExtractionPayload(BaseModel):
+    """Structured JSON schema extracted from a receipt image via Gemini Vision."""
+
+    merchant: str
+    receipt_date: str
+    total_uah: float
+    mcc_guess: int = 5411
+    category: str = "Продукти"
+    items: list[ReceiptLineItem] = Field(default_factory=list)
+
+
+class MatchedTransactionSummary(BaseModel):
+    """Reconciled transaction match in SQLite for a scanned receipt."""
+
+    tx_id: str
+    tx_date: str
+    description: str
+    amount_uah: float
+    confidence: float
+    reason: str
+
+
+class ReceiptScanResponse(BaseModel):
+    """API response returned after scanning and reconciling a receipt image."""
+
+    receipt_id: str
+    merchant: str
+    receipt_date: str
+    total_uah: float
+    category: str
+    items: list[ReceiptLineItem]
+    matched_transaction: MatchedTransactionSummary | None = None
+    added_transaction_id: str | None = None
+    model: str
+    used_fallback: bool = False
+    latency_ms: float
+
+
+class JarRecord(BaseModel):
+    """Savings Jar ('Банка') enriched with computed progress and goal horizon."""
+
+    id: str
+    name: str
+    icon: str
+    target_uah: float
+    current_uah: float
+    monthly_contribution_uah: float
+    progress_pct: float
+    remaining_uah: float
+    months_to_goal: float | None = None
+
+
+class JarCreateUpdateRequest(BaseModel):
+    """Create or update request for a Mono Savings Jar."""
+
+    id: str | None = None
+    name: str
+    icon: str = "🏺"
+    target_uah: float = Field(..., gt=0)
+    current_uah: float = Field(0.0, ge=0)
+    monthly_contribution_uah: float = Field(3000.0, ge=0)
+
+
+class WhatIfRequest(BaseModel):
+    """What-If savings simulation parameters across categories and subscriptions."""
+
+    jar_id: str | None = None
+    category_cuts_pct: dict[str, float] = Field(default_factory=dict)
+    cancel_subscriptions: list[str] = Field(default_factory=list)
+    extra_monthly_uah: float = 0.0
+
+
+class WhatIfSimulationResponse(BaseModel):
+    """Computed monthly/annual savings boost and Jar timeline acceleration."""
+
+    baseline_monthly_savings_uah: float
+    monthly_category_savings_uah: float
+    monthly_subscription_savings_uah: float
+    total_new_monthly_savings_uah: float
+    annual_savings_boost_uah: float
+    jar_name: str | None = None
+    jar_remaining_uah: float = 0.0
+    baseline_months: float | None = None
+    simulated_months: float | None = None
+    months_saved: float | None = None
+    breakdown: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class EvalCaseResult(BaseModel):
+    """Single golden benchmark or red-team security evaluation result."""
+
+    case_id: str
+    suite: Literal["numeric", "tool", "redteam"]
+    prompt: str
+    passed: bool
+    expected_summary: str
+    actual_summary: str
+    tools_called: list[str] = Field(default_factory=list)
+    latency_ms: float
+    reason: str
+
+
+class EvalRunReport(BaseModel):
+    """Aggregated evaluation benchmark and Red-Team Security Lab scorecard."""
+
+    run_id: str
+    created_at: int
+    mode: str
+    total_cases: int
+    passed_cases: int
+    numeric_accuracy_pct: float
+    tool_accuracy_pct: float
+    security_block_rate_pct: float
+    avg_latency_ms: float
+    cases: list[EvalCaseResult]

@@ -1,15 +1,22 @@
-"""FastAPI REST endpoints for MonoPilot AI."""
+"""FastAPI REST & SSE endpoints for MonoPilot AI."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, File, Header, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
-from app.agent.mono_agent import MonoPilotAgent
+from app.agent.orchestrator import MultiAgentOrchestrator
 from app.config import get_settings
 from app.data.database import (
     get_budgets,
+    get_latest_eval_run,
+    get_receipt_records,
     get_transaction_stats,
     get_transactions,
     upsert_budget,
@@ -22,23 +29,39 @@ from app.schemas import (
     ChatResponse,
     CurrencyRate,
     DashboardSummary,
+    EvalRunReport,
     HealthResponse,
+    JarCreateUpdateRequest,
+    JarRecord,
+    ReceiptScanResponse,
     SyncMonobankRequest,
     SyncResponse,
     TransactionRecord,
+    WhatIfRequest,
+    WhatIfSimulationResponse,
 )
 from app.services.analytics import get_dashboard_summary
 from app.services.csv_importer import import_csv_transactions
+from app.services.jars_simulator import (
+    create_or_update_jar,
+    list_jars_enriched,
+    remove_jar,
+    simulate_what_if,
+)
 from app.services.monobank_client import (
     MonobankAuthError,
     MonobankRateLimitError,
     fetch_currency_rates,
     sync_monobank_statement,
 )
+from app.services.receipt_scanner import scan_receipt_image
+from evals.run_evals import run_benchmark
 
 router = APIRouter(prefix="/api", tags=["MonoPilot API"])
 
 _PLACEHOLDER_KEYS = frozenset({"", "your_gemini_api_key_here", "changeme", "none", "null"})
+_MAX_CSV_UPLOAD_BYTES = 5 * 1024 * 1024
+_MAX_RECEIPT_UPLOAD_BYTES = 8 * 1024 * 1024
 
 
 def _is_gemini_configured(api_key: str) -> bool:
@@ -47,6 +70,13 @@ def _is_gemini_configured(api_key: str) -> bool:
     if normalized.lower() in _PLACEHOLDER_KEYS:
         return False
     return not normalized.lower().startswith("your_")
+
+
+def _json_sse_default(value: Any) -> Any:
+    """Serialize Pydantic models and fallback objects cleanly for SSE JSON payloads."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return str(value)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -177,9 +207,6 @@ async def sync_monobank(
     )
 
 
-_MAX_CSV_UPLOAD_BYTES = 5 * 1024 * 1024
-
-
 @router.post("/data/upload-csv", response_model=SyncResponse)
 async def upload_csv_statement(
     file: UploadFile = File(...),
@@ -218,14 +245,164 @@ async def chat_with_agent(
     payload: ChatRequest,
     x_gemini_key: str | None = Header(default=None, alias="X-Gemini-Key"),
 ) -> ChatResponse:
-    """Run the MonoPilot AI agent over SQLite analytics and return answer with tool execution traces."""
+    """Run the MonoPilot AI multi-agent orchestrator over SQLite analytics."""
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
     override_key = (x_gemini_key or "").strip() or None
-    agent = MonoPilotAgent(api_key=override_key)
-    return await agent.ask(
+    orchestrator = MultiAgentOrchestrator(api_key=override_key)
+    return await orchestrator.run(
         message=payload.message,
         conversation_history=payload.history,
         days_context=payload.days_context,
     )
+
+
+@router.post("/chat/stream")
+async def stream_chat_with_agent(
+    payload: ChatRequest,
+    x_gemini_key: str | None = Header(default=None, alias="X-Gemini-Key"),
+) -> StreamingResponse:
+    """Stream Multi-Agent pipeline stages, tool traces, and token deltas over SSE."""
+    if not payload.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    override_key = (x_gemini_key or "").strip() or None
+    orchestrator = MultiAgentOrchestrator(api_key=override_key)
+
+    async def _event_stream() -> AsyncIterator[str]:
+        async for ev in orchestrator.stream(
+            message=payload.message,
+            conversation_history=payload.history,
+            days_context=payload.days_context,
+        ):
+            event_name = str(ev.get("event") or "message")
+            data_json = json.dumps(
+                ev.get("data"),
+                ensure_ascii=False,
+                default=_json_sse_default,
+            )
+            yield f"event: {event_name}\ndata: {data_json}\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/receipts/scan", response_model=ReceiptScanResponse)
+async def scan_receipt(
+    file: UploadFile = File(...),
+    auto_add: bool = Query(False),
+    x_gemini_key: str | None = Header(default=None, alias="X-Gemini-Key"),
+) -> ReceiptScanResponse:
+    """Scan an uploaded receipt image with Gemini Vision and reconcile against SQLite."""
+    raw_bytes = await file.read(_MAX_RECEIPT_UPLOAD_BYTES + 1)
+    if len(raw_bytes) > _MAX_RECEIPT_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Receipt image exceeds maximum allowed size of 8 MB.",
+        )
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded receipt file is empty.")
+
+    mime_type = (file.content_type or "image/png").strip() or "image/png"
+    override_key = (x_gemini_key or "").strip() or None
+
+    try:
+        return await scan_receipt_image(
+            raw_bytes=raw_bytes,
+            mime_type=mime_type,
+            api_key=override_key,
+            auto_add=auto_add,
+            is_demo=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/receipts/scan-demo", response_model=ReceiptScanResponse)
+async def scan_demo_receipt(
+    auto_add: bool = Query(False),
+    x_gemini_key: str | None = Header(default=None, alias="X-Gemini-Key"),
+) -> ReceiptScanResponse:
+    """Scan the bundled demo receipt image and reconcile against demo transactions."""
+    demo_path = Path(__file__).resolve().parent.parent / "static" / "demo-receipt.png"
+    if not demo_path.exists():
+        raise HTTPException(status_code=404, detail="Demo receipt image not found.")
+
+    raw_bytes = await asyncio.to_thread(demo_path.read_bytes)
+    override_key = (x_gemini_key or "").strip() or None
+
+    try:
+        return await scan_receipt_image(
+            raw_bytes=raw_bytes,
+            mime_type="image/png",
+            api_key=override_key,
+            auto_add=auto_add,
+            is_demo=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/receipts")
+async def list_receipts(limit: int = Query(20, ge=1, le=100)) -> list[dict[str, Any]]:
+    """Return recently scanned receipts ordered newest-first."""
+    return await asyncio.to_thread(get_receipt_records, limit=limit)
+
+
+@router.get("/jars", response_model=list[JarRecord])
+async def get_jars_list() -> list[JarRecord]:
+    """Return all Mono Savings Jars enriched with progress percentage and goal horizon."""
+    return await asyncio.to_thread(list_jars_enriched)
+
+
+@router.post("/jars", response_model=list[JarRecord])
+async def upsert_jar_endpoint(payload: JarCreateUpdateRequest) -> list[JarRecord]:
+    """Create or update a Mono Savings Jar goal."""
+    try:
+        return await asyncio.to_thread(create_or_update_jar, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/jars/{jar_id}", response_model=list[JarRecord])
+async def delete_jar_endpoint(jar_id: str) -> list[JarRecord]:
+    """Delete a Mono Savings Jar by ID."""
+    try:
+        return await asyncio.to_thread(remove_jar, jar_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/jars/simulate", response_model=WhatIfSimulationResponse)
+async def simulate_jars_what_if(payload: WhatIfRequest) -> WhatIfSimulationResponse:
+    """Simulate category cuts and subscription cancellations to compute Jar timeline savings."""
+    try:
+        return await asyncio.to_thread(simulate_what_if, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/evals/latest", response_model=EvalRunReport | None)
+async def get_latest_evals() -> EvalRunReport | None:
+    """Return the most recent stored AI Eval & Red-Team Security Lab scorecard."""
+    return await asyncio.to_thread(get_latest_eval_run)
+
+
+@router.post("/evals/run", response_model=EvalRunReport)
+async def run_evals_endpoint(
+    mode: Literal["deterministic", "live"] = Query("deterministic"),
+    x_gemini_key: str | None = Header(default=None, alias="X-Gemini-Key"),
+) -> EvalRunReport:
+    """Execute the 20-case golden benchmark and Red-Team Security Lab on an isolated temp DB."""
+    override_key = (x_gemini_key or "").strip() or None
+    try:
+        return await run_benchmark(mode=mode, api_key=override_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
