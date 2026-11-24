@@ -7,33 +7,46 @@
     THEME: "monopilot_theme",
   };
 
-  const CHART_PALETTE = [
-    "#fa5255",
-    "#2cc56f",
-    "#f4b740",
-    "#4da3ff",
-    "#9b8afb",
-    "#e87a5d",
-    "#38bdf8",
-    "#ec4899",
-    "#84cc16",
+  const LIGHT_CHART_PALETTE = [
+    "#111827",
+    "#4f46e5",
+    "#0d9488",
+    "#d97706",
+    "#e11d48",
     "#64748b",
+    "#0284c7",
+    "#a8a29e",
+  ];
+
+  const DARK_CHART_PALETTE = [
+    "#f3f4f6",
+    "#818cf8",
+    "#2dd4bf",
+    "#fbbf24",
+    "#fb7185",
+    "#94a3b8",
+    "#38bdf8",
+    "#a8a29e",
   ];
 
   const FORECAST_LABELS = {
-    on_track: { text: "В межах плану", cls: "status-on-track" },
+    on_track: { text: "У межах плану", cls: "status-on-track" },
     warning: { text: "Близько до ліміту", cls: "status-warning" },
-    over_budget: { text: "Перевищення", cls: "status-over-budget" },
+    over_budget: { text: "Перевищення плану", cls: "status-over-budget" },
   };
 
   const VALID_TABS = new Set(["home", "analytics", "budgets", "chat"]);
+  const VALID_VIEWS = new Set(["home", "analytics", "jars", "budgets"]);
 
   const state = {
     days: 30,
+    desktopView: "home",
     mobileTab: "home",
     health: null,
     dashboard: null,
     budgets: [],
+    transactions: [],
+    txFilter: "",
     jars: [],
     selectedJarId: "",
     history: [],
@@ -289,11 +302,11 @@
   }
 
   function isLightTheme() {
-    return document.body?.dataset?.theme === "light";
+    return document.body?.dataset?.theme !== "dark";
   }
 
   function applyTheme(themeName, redrawCharts = false) {
-    const next = themeName === "light" ? "light" : "dark";
+    const next = themeName === "dark" ? "dark" : "light";
     if (document.body) {
       document.body.dataset.theme = next;
     }
@@ -301,17 +314,17 @@
 
     const meta = $("theme-color-meta");
     if (meta) {
-      meta.setAttribute("content", next === "light" ? "#f5f4f0" : "#111214");
+      meta.setAttribute("content", next === "dark" ? "#0c0d10" : "#ffffff");
     }
 
     const desktopLabel = $("theme-toggle-label");
     if (desktopLabel) {
-      desktopLabel.textContent = next === "light" ? "Темна тема" : "Світла тема";
+      desktopLabel.textContent = next === "dark" ? "Світла тема" : "Темна тема";
     }
 
     const mobileBtn = $("mobile-theme-btn");
     if (mobileBtn) {
-      mobileBtn.textContent = next === "light" ? "Темна" : "Світла";
+      mobileBtn.textContent = next === "dark" ? "Світла" : "Темна";
     }
 
     if (redrawCharts && state.dashboard) {
@@ -324,83 +337,119 @@
     applyTheme(isLightTheme() ? "dark" : "light", true);
   }
 
+  function openAiDrawer(focusInput = false) {
+    if (window.innerWidth <= 860) {
+      setMobileTab("chat");
+    } else if (document.body) {
+      document.body.classList.add("ai-open");
+      if (state.dashboard) {
+        window.requestAnimationFrame(() => {
+          renderCategoriesChart(state.dashboard.categories);
+          renderDailyChart(state.dashboard.daily_series);
+        });
+      }
+    }
+    if (focusInput) {
+      window.setTimeout(() => $("chat-input")?.focus(), 40);
+    }
+  }
+
+  function closeAiDrawer() {
+    if (document.body) {
+      document.body.classList.remove("ai-open");
+      if (state.dashboard) {
+        window.requestAnimationFrame(() => {
+          renderCategoriesChart(state.dashboard.categories);
+          renderDailyChart(state.dashboard.daily_series);
+        });
+      }
+    }
+  }
+
+  function toggleAiDrawer() {
+    if (document.body?.classList.contains("ai-open")) {
+      closeAiDrawer();
+    } else {
+      openAiDrawer(true);
+    }
+  }
+
+  function setDesktopView(viewName) {
+    const nextView = VALID_VIEWS.has(viewName) ? viewName : "home";
+    state.desktopView = nextView;
+    if (document.body) {
+      document.body.dataset.view = nextView;
+    }
+
+    document.querySelectorAll(".sidebar-nav-item[data-nav]").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-nav") === nextView);
+    });
+
+    window.scrollTo({ top: 0, behavior: "instant" });
+    if (state.dashboard) {
+      window.requestAnimationFrame(() => {
+        if (nextView === "home") {
+          renderDailyChart(state.dashboard.daily_series);
+        } else if (nextView === "analytics") {
+          renderCategoriesChart(state.dashboard.categories);
+        }
+      });
+    }
+  }
+
   function updateHumanGreeting(data = null) {
     const greetingEl = $("human-greeting");
     const verdictEl = $("verdict-summary");
     if (greetingEl) {
-      const hour = new Date().getHours();
-      let greeting = "Добрий день";
-      if (hour >= 5 && hour < 12) greeting = "Доброго ранку";
-      else if (hour >= 18 && hour < 23) greeting = "Добрий вечір";
-      else if (hour >= 23 || hour < 5) greeting = "Доброї ночі";
-      greetingEl.textContent = greeting;
+      greetingEl.textContent = "Основний рахунок";
     }
 
     if (verdictEl && data) {
       const forecast = data.forecast || {};
       const safeDaily = Number(forecast.safe_daily_allowance_uah || 0);
-      const balance = formatUAH(data.current_balance_uah);
       if (forecast.status === "over_budget") {
-        verdictEl.textContent = `На картці ${balance} · витрати випереджають місячний план — варто переглянути ліміти.`;
+        verdictEl.textContent = `Темп витрат перевищує встановлений місячний бюджет (${formatNumber(forecast.total_monthly_budget_uah, 0)} ₴).`;
       } else if (safeDaily > 0) {
-        verdictEl.textContent = `На картці ${balance} · комфортно витрачати до ${formatNumber(safeDaily, 0)} ₴/день.`;
+        verdictEl.textContent = `Рекомендований денний ліміт до кінця місяця — ${formatNumber(safeDaily, 0)} ₴.`;
       } else {
-        verdictEl.textContent = `На картці ${balance} · ${data.total_transactions ?? 0} операцій за ${data.period_days ?? state.days} дн.`;
+        verdictEl.textContent = `Оброблено ${data.total_transactions ?? 0} операцій за останні ${data.period_days ?? state.days} днів.`;
       }
     }
   }
 
-  const MERCHANT_AVATAR_MAP = [
-    { key: "сільпо", abbr: "СІ", bg: "rgba(244, 183, 64, 0.18)", fg: "#f59e0b" },
-    { key: "silpo", abbr: "СІ", bg: "rgba(244, 183, 64, 0.18)", fg: "#f59e0b" },
-    { key: "атб", abbr: "АТ", bg: "rgba(77, 163, 255, 0.18)", fg: "#4da3ff" },
-    { key: "novus", abbr: "NV", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
-    { key: "netflix", abbr: "NF", bg: "rgba(250, 82, 85, 0.18)", fg: "#fa5255" },
-    { key: "spotify", abbr: "SP", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
-    { key: "youtube", abbr: "YT", bg: "rgba(250, 82, 85, 0.16)", fg: "#fa5255" },
-    { key: "rozetka", abbr: "RZ", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
-    { key: "glovo", abbr: "GL", bg: "rgba(244, 183, 64, 0.2)", fg: "#f4b740" },
-    { key: "kyivstar", abbr: "KS", bg: "rgba(77, 163, 255, 0.18)", fg: "#4da3ff" },
-    { key: "apple", abbr: "AP", bg: "rgba(156, 159, 169, 0.18)", fg: "#9c9fa9" },
-    { key: "okko", abbr: "OK", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
-    { key: "wog", abbr: "WG", bg: "rgba(244, 183, 64, 0.18)", fg: "#f4b740" },
-    { key: "пошта", abbr: "НП", bg: "rgba(250, 82, 85, 0.18)", fg: "#fa5255" },
-    { key: "bolt", abbr: "BL", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
-    { key: "uber", abbr: "UB", bg: "rgba(156, 159, 169, 0.18)", fg: "#9c9fa9" },
-    { key: "catch", abbr: "CT", bg: "rgba(232, 122, 93, 0.18)", fg: "#e87a5d" },
-    { key: "зарплата", abbr: "ЗП", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
-  ];
-
-  const AVATAR_FALLBACK_TONES = [
-    { bg: "rgba(77, 163, 255, 0.16)", fg: "#4da3ff" },
-    { bg: "rgba(44, 197, 111, 0.16)", fg: "#2cc56f" },
-    { bg: "rgba(244, 183, 64, 0.16)", fg: "#f4b740" },
-    { bg: "rgba(155, 138, 251, 0.16)", fg: "#9b8afb" },
-    { bg: "rgba(250, 82, 85, 0.16)", fg: "#fa5255" },
+  const MERCHANT_ABBR_MAP = [
+    { key: "сільпо", abbr: "СІ" },
+    { key: "silpo", abbr: "СІ" },
+    { key: "атб", abbr: "АТ" },
+    { key: "novus", abbr: "NV" },
+    { key: "netflix", abbr: "NF" },
+    { key: "spotify", abbr: "SP" },
+    { key: "youtube", abbr: "YT" },
+    { key: "rozetka", abbr: "RZ" },
+    { key: "glovo", abbr: "GL" },
+    { key: "kyivstar", abbr: "KS" },
+    { key: "apple", abbr: "AP" },
+    { key: "okko", abbr: "OK" },
+    { key: "wog", abbr: "WG" },
+    { key: "пошта", abbr: "НП" },
+    { key: "bolt", abbr: "BL" },
+    { key: "uber", abbr: "UB" },
+    { key: "catch", abbr: "CT" },
+    { key: "зарплата", abbr: "ЗП" },
   ];
 
   function renderMerchantAvatar(rawName) {
     const clean = String(rawName || "?").trim() || "?";
     const lower = clean.toLowerCase();
-    const matched = MERCHANT_AVATAR_MAP.find((item) => lower.includes(item.key));
+    const matched = MERCHANT_ABBR_MAP.find((item) => lower.includes(item.key));
     let abbr = matched?.abbr;
-    let tone = matched;
 
     if (!abbr) {
       const words = clean.replace(/[^a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9\s]/g, " ").trim().split(/\s+/).filter(Boolean);
-      if (words.length >= 2) {
-        abbr = `${words[0][0]}${words[1][0]}`.toUpperCase();
-      } else {
-        abbr = clean.slice(0, 2).toUpperCase();
-      }
-      let hash = 0;
-      for (let i = 0; i < lower.length; i += 1) {
-        hash = (hash * 31 + lower.charCodeAt(i)) | 0;
-      }
-      tone = AVATAR_FALLBACK_TONES[Math.abs(hash) % AVATAR_FALLBACK_TONES.length];
+      abbr = words.length >= 2 ? `${words[0][0]}${words[1][0]}`.toUpperCase() : clean.slice(0, 2).toUpperCase();
     }
 
-    return `<span class="merchant-avatar" style="background:${tone.bg};color:${tone.fg};" aria-hidden="true">${escapeHtml(abbr)}</span>`;
+    return `<span class="merchant-avatar" aria-hidden="true">${escapeHtml(abbr)}</span>`;
   }
 
   function setMobileTab(tabName) {
@@ -432,15 +481,15 @@
     if (modePill) {
       const normMode = String(activeMode).toLowerCase();
       let pillCls = "pill-demo";
-      let pillLabel = "Demo Mode";
+      let pillLabel = "Демо-дані";
       if (normMode.includes("mono")) {
         pillCls = "pill-live";
         pillLabel = "Monobank Live";
       } else if (normMode === "csv") {
         pillCls = "pill-csv";
-        pillLabel = "CSV Import";
+        pillLabel = "CSV виписка";
       }
-      modePill.className = `status-pill ${pillCls}`;
+      modePill.className = `status-text ${pillCls}`;
       const label = modePill.querySelector(".pill-label");
       if (label) {
         label.textContent = pillLabel;
@@ -451,10 +500,10 @@
       const hasSessionGemini = Boolean(getSessionKey(SESSION_KEYS.GEMINI));
       const serverGemini = Boolean(state.health?.gemini_configured);
       const isAiLive = serverGemini || hasSessionGemini;
-      aiPill.className = `status-pill ${isAiLive ? "pill-live" : "pill-fallback"}`;
+      aiPill.className = `status-text ${isAiLive ? "pill-live" : "pill-fallback"}`;
       const label = aiPill.querySelector(".pill-label");
       if (label) {
-        label.textContent = isAiLive ? "AI Live" : "Local Tools";
+        label.textContent = isAiLive ? "Gemini підключено" : "Локальний аналіз";
       }
     }
   }
@@ -488,7 +537,7 @@
 
   function renderKpis(data) {
     $("kpi-expense-val").textContent = formatUAH(data.total_expense_uah);
-    $("kpi-expense-sub").textContent = `${data.total_transactions ?? 0} транзакцій за ${data.period_days ?? state.days} дн.`;
+    $("kpi-expense-sub").textContent = `${data.total_transactions ?? 0} операцій за ${data.period_days ?? state.days} дн.`;
 
     $("kpi-income-val").textContent = formatUAH(data.total_income_uah, true);
     $("kpi-income-sub").textContent = `Кешбек: +${formatUAH(data.total_cashback_uah)}`;
@@ -496,37 +545,39 @@
     const netVal = Number(data.net_cashflow_uah || 0);
     const netEl = $("kpi-net-val");
     netEl.textContent = formatUAH(netVal, true);
-    netEl.className = `kpi-value mono-num ${netVal >= 0 ? "kpi-positive" : "kpi-negative"}`;
-    $("kpi-net-sub").textContent = `Баланс картки: ${formatUAH(data.current_balance_uah)}`;
+    netEl.className = `metric-value tab-num ${netVal >= 0 ? "metric-positive" : "metric-negative"}`;
+    $("kpi-net-sub").textContent = `Залишок: ${formatUAH(data.current_balance_uah)}`;
 
     const forecast = data.forecast || {};
     $("kpi-forecast-val").textContent = formatUAH(forecast.projected_month_total_uah);
     const statusMeta = FORECAST_LABELS[forecast.status] || FORECAST_LABELS.on_track;
     const badge = $("kpi-forecast-badge");
     badge.textContent = statusMeta.text;
-    badge.className = `forecast-badge ${statusMeta.cls}`;
+    badge.className = `status-tag ${statusMeta.cls}`;
     $("kpi-forecast-sub").textContent =
-      `Ліміт ${formatNumber(forecast.total_monthly_budget_uah, 0)} ₴ · ${formatNumber(forecast.safe_daily_allowance_uah, 0)} ₴/день`;
+      `Бюджет ${formatNumber(forecast.total_monthly_budget_uah, 0)} ₴ · ${formatNumber(forecast.safe_daily_allowance_uah, 0)} ₴/день`;
 
-    // Virtual monobank Black Card Hero bindings
     const heroBalance = $("hero-balance-val");
     if (heroBalance) heroBalance.textContent = formatUAH(data.current_balance_uah);
     const heroNet = $("hero-net-pill");
-    if (heroNet) heroNet.textContent = `Нетто: ${formatUAH(netVal, true)}`;
+    if (heroNet) {
+      heroNet.textContent = `${formatUAH(netVal, true)} за ${data.period_days ?? state.days} дн.`;
+      heroNet.className = `inline-delta tab-num ${netVal >= 0 ? "metric-positive" : "metric-negative"}`;
+    }
     const heroCashback = $("hero-cashback-pill");
-    if (heroCashback) heroCashback.textContent = `Кешбек: +${formatUAH(data.total_cashback_uah)}`;
+    if (heroCashback) heroCashback.textContent = `Кешбек +${formatUAH(data.total_cashback_uah)}`;
     const heroMode = $("hero-card-mode");
     if (heroMode) {
       heroMode.textContent =
-        data.mode === "monobank" ? "LIVE" : data.mode === "csv" ? "CSV" : "DEMO";
+        data.mode === "monobank" ? "Monobank" : data.mode === "csv" ? "CSV" : "Demo";
     }
 
     const budgetSummaryStrip = $("budget-summary-strip");
     if (budgetSummaryStrip) {
       budgetSummaryStrip.innerHTML = `
-        <span class="mono-num">Місяць: <strong>${escapeHtml(forecast.current_month || "—")}</strong> (день ${forecast.days_elapsed ?? 0} з ${forecast.days_in_month ?? 30})</span>
-        <span class="mono-num">Витрачено: <strong>${formatUAH(forecast.spent_so_far_uah)}</strong> · Темп: <strong>${formatNumber(forecast.daily_burn_rate_uah, 0)} ₴/день</strong></span>
-        <span class="mono-num">Прогноз: <strong>${formatUAH(forecast.projected_month_total_uah)}</strong></span>
+        <span class="tab-num">Місяць: <strong>${escapeHtml(forecast.current_month || "—")}</strong> (день ${forecast.days_elapsed ?? 0} із ${forecast.days_in_month ?? 30})</span>
+        <span class="tab-num">Витрачено: <strong>${formatUAH(forecast.spent_so_far_uah)}</strong> · Середній темп: <strong>${formatNumber(forecast.daily_burn_rate_uah, 0)} ₴/день</strong></span>
+        <span class="tab-num">Очікувано за місяць: <strong>${formatUAH(forecast.projected_month_total_uah)}</strong></span>
       `;
     }
 
@@ -534,11 +585,39 @@
       data.mode === "monobank"
         ? "Monobank Live"
         : data.mode === "csv"
-          ? "CSV Import"
-          : "Demo";
+          ? "Імпорт CSV"
+          : "Демо-виписка";
     $("dashboard-meta").textContent =
-      `Режим: ${modeLabel} · ${data.total_transactions} операцій за останні ${data.period_days} дн.`;
+      `${modeLabel} · ${data.total_transactions} операцій за останні ${data.period_days} дн.`;
     updateHumanGreeting(data);
+  }
+
+  function renderCategoryBreakdownList(categories, palette) {
+    const box = $("categories-breakdown-list");
+    if (!box) return;
+    const list = Array.isArray(categories) ? categories : [];
+    if (list.length === 0) {
+      box.innerHTML = `<p class="empty-state">Немає витрат за обраний період.</p>`;
+      return;
+    }
+    box.innerHTML = list
+      .slice(0, 6)
+      .map((cat, idx) => {
+        const pct = Math.min(100, Math.max(0, Number(cat.share_pct || 0)));
+        const col = palette[idx % palette.length];
+        return `
+          <div class="cat-bar-row">
+            <div class="cat-bar-top">
+              <span class="cat-bar-name">${escapeHtml(cat.category)}</span>
+              <span class="cat-bar-val tab-num">${formatUAH(cat.total_uah)} · ${formatNumber(pct, 1)}%</span>
+            </div>
+            <div class="cat-bar-track">
+              <div class="cat-bar-fill" style="width:${pct.toFixed(1)}%;background:${col};"></div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
   }
 
   function renderCategoriesChart(categories) {
@@ -546,10 +625,13 @@
     const fallback = $("categories-empty");
     const chip = $("categories-total-chip");
     const list = Array.isArray(categories) ? categories : [];
+    const light = isLightTheme();
+    const palette = light ? LIGHT_CHART_PALETTE : DARK_CHART_PALETTE;
 
     if (chip) {
       chip.textContent = `${list.length} категорій`;
     }
+    renderCategoryBreakdownList(list, palette);
 
     if (state.categoriesChart) {
       state.categoriesChart.destroy();
@@ -566,7 +648,7 @@
             : list
                 .map(
                   (c) =>
-                    `<div class="insight-row" style="padding:4px 0;"><span>${escapeHtml(c.category)}</span><span class="mono-num">${formatUAH(c.total_uah)} (${formatNumber(c.share_pct, 1)}%)</span></div>`
+                    `<div class="insight-row" style="padding:4px 0;"><span>${escapeHtml(c.category)}</span><span class="tab-num">${formatUAH(c.total_uah)} (${formatNumber(c.share_pct, 1)}%)</span></div>`
                 )
                 .join("");
       }
@@ -578,7 +660,6 @@
 
     const topItems = list.slice(0, 8);
     const ctx = canvas.getContext("2d");
-    const light = isLightTheme();
     state.categoriesChart = new window.Chart(ctx, {
       type: "doughnut",
       data: {
@@ -586,30 +667,30 @@
         datasets: [
           {
             data: topItems.map((c) => Number(c.total_uah || 0)),
-            backgroundColor: topItems.map((_, idx) => CHART_PALETTE[idx % CHART_PALETTE.length]),
-            borderColor: light ? "#ffffff" : "#1a1b20",
+            backgroundColor: topItems.map((_, idx) => palette[idx % palette.length]),
+            borderColor: light ? "#ffffff" : "#111318",
             borderWidth: 2,
-            hoverOffset: 6,
+            hoverOffset: 4,
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: "68%",
+        cutout: "70%",
         plugins: {
           legend: {
             position: window.innerWidth <= 540 ? "bottom" : "right",
             labels: {
-              color: light ? "#4b5563" : "#cbd5e1",
-              boxWidth: 10,
-              padding: 9,
-              font: { size: 11, family: "Inter, sans-serif" },
+              color: light ? "#4b5563" : "#9ca3af",
+              boxWidth: 9,
+              padding: 10,
+              font: { size: 11.5, family: "Inter, sans-serif" },
             },
           },
           tooltip: {
-            backgroundColor: light ? "#17181c" : "#111214",
-            borderColor: "rgba(255,255,255,0.14)",
+            backgroundColor: "#111827",
+            borderColor: "rgba(255,255,255,0.12)",
             borderWidth: 1,
             callbacks: {
               label: (item) => {
@@ -644,7 +725,7 @@
                 .slice(-10)
                 .map(
                   (d) =>
-                    `<div class="insight-row" style="padding:4px 0;"><span class="mono-num">${escapeHtml(d.date)}</span><span class="mono-num">-${formatNumber(d.expense_uah, 0)} / +${formatNumber(d.income_uah, 0)} ₴</span></div>`
+                    `<div class="insight-row" style="padding:4px 0;"><span class="tab-num">${escapeHtml(d.date)}</span><span class="tab-num">-${formatNumber(d.expense_uah, 0)} / +${formatNumber(d.income_uah, 0)} ₴</span></div>`
                 )
                 .join("");
       }
@@ -664,16 +745,16 @@
           {
             label: "Витрати",
             data: list.map((d) => Number(d.expense_uah || 0)),
-            backgroundColor: light ? "rgba(229, 67, 70, 0.85)" : "rgba(250, 82, 85, 0.86)",
-            borderRadius: 6,
-            maxBarThickness: 18,
+            backgroundColor: light ? "#1f2937" : "#94a3b8",
+            borderRadius: 4,
+            maxBarThickness: 14,
           },
           {
-            label: "Доходи",
+            label: "Надходження",
             data: list.map((d) => Number(d.income_uah || 0)),
-            backgroundColor: light ? "rgba(23, 155, 82, 0.85)" : "rgba(44, 197, 111, 0.84)",
-            borderRadius: 6,
-            maxBarThickness: 18,
+            backgroundColor: light ? "#059669" : "#10b981",
+            borderRadius: 4,
+            maxBarThickness: 14,
           },
         ],
       },
@@ -687,32 +768,33 @@
         scales: {
           x: {
             ticks: {
-              color: light ? "#5c5f6a" : "#9c9fa9",
-              font: { size: 10, family: "JetBrains Mono, monospace" },
+              color: light ? "#6b7280" : "#9ca3af",
+              font: { size: 11, family: "Inter, sans-serif" },
             },
             grid: { display: false },
           },
           y: {
             beginAtZero: true,
             ticks: {
-              color: light ? "#5c5f6a" : "#9c9fa9",
-              font: { size: 10, family: "JetBrains Mono, monospace" },
+              color: light ? "#6b7280" : "#9ca3af",
+              font: { size: 11, family: "Inter, sans-serif" },
               callback: (val) => `${val} ₴`,
             },
-            grid: { color: light ? "rgba(17,18,20,0.07)" : "rgba(255,255,255,0.06)" },
+            grid: { color: light ? "#f3f4f6" : "rgba(255,255,255,0.06)" },
           },
         },
         plugins: {
           legend: {
+            align: "end",
             labels: {
-              color: light ? "#4b5563" : "#cbd5e1",
-              boxWidth: 10,
-              font: { size: 11, family: "Inter, sans-serif" },
+              color: light ? "#4b5563" : "#9ca3af",
+              boxWidth: 9,
+              font: { size: 11.5, family: "Inter, sans-serif" },
             },
           },
           tooltip: {
-            backgroundColor: light ? "#17181c" : "#111214",
-            borderColor: "rgba(255,255,255,0.14)",
+            backgroundColor: "#111827",
+            borderColor: "rgba(255,255,255,0.12)",
             borderWidth: 1,
             callbacks: {
               label: (ctxItem) => ` ${ctxItem.dataset.label}: ${formatUAH(ctxItem.raw)}`,
@@ -738,17 +820,17 @@
     container.innerHTML = list
       .map(
         (sub) => `
-          <div class="insight-item">
+          <div class="clean-list-item">
             <div class="insight-row">
               <div class="insight-title-wrap">
                 ${renderMerchantAvatar(sub.merchant)}
                 <span class="insight-title">${escapeHtml(sub.merchant)}</span>
               </div>
-              <span class="insight-amount mono-num">${formatUAH(sub.avg_amount_uah)}/міс</span>
+              <span class="insight-amount tab-num">${formatUAH(sub.avg_amount_uah)}/міс</span>
             </div>
             <div class="insight-meta">
               <span>${escapeHtml(sub.category)} · ${sub.occurrences} списань</span>
-              <span class="mono-num">Рік: ${formatUAH(sub.annual_cost_uah)} · Наст: ${escapeHtml(sub.next_expected_date)}</span>
+              <span class="tab-num">За рік ${formatUAH(sub.annual_cost_uah)} · наступне ${escapeHtml(sub.next_expected_date)}</span>
             </div>
           </div>
         `
@@ -764,27 +846,24 @@
     if (!container) return;
 
     if (list.length === 0) {
-      container.innerHTML = `<p class="empty-state">Аномально великих витрат не виявлено.</p>`;
+      container.innerHTML = `<p class="empty-state">Нетипово великих витрат не виявлено.</p>`;
       return;
     }
 
     container.innerHTML = list
       .map(
         (item) => `
-          <div class="insight-item">
+          <div class="clean-list-item">
             <div class="insight-row">
               <div class="insight-title-wrap">
                 ${renderMerchantAvatar(item.description)}
                 <span class="insight-title">${escapeHtml(item.description)}</span>
               </div>
-              <span class="insight-amount kpi-negative mono-num">${formatUAH(item.amount_uah)}</span>
+              <span class="insight-amount kpi-negative tab-num">${formatUAH(item.amount_uah)}</span>
             </div>
             <div class="insight-meta">
-              <span>${escapeHtml(item.tx_date)} · Сер. по категорії: ${formatUAH(item.category_avg_uah)}</span>
-              <span class="ratio-pill mono-num">${formatNumber(item.ratio_to_avg, 1)}× від середнього</span>
-            </div>
-            <div class="insight-meta">
-              <span>${escapeHtml(item.reason)}</span>
+              <span>${escapeHtml(item.tx_date)} · середній чек у категорії ${formatUAH(item.category_avg_uah)}</span>
+              <span class="ratio-pill tab-num">${formatNumber(item.ratio_to_avg, 1)}× вище норми</span>
             </div>
           </div>
         `
@@ -795,42 +874,52 @@
   function renderTransactions(transactions) {
     const tbody = $("transactions-tbody");
     const countEl = $("transactions-count");
-    const list = Array.isArray(transactions) ? transactions : [];
-    if (countEl) countEl.textContent = String(list.length);
+    const sourceList = Array.isArray(transactions) ? transactions : state.transactions;
+    const query = (state.txFilter || "").trim().toLowerCase();
+    const list = query
+      ? sourceList.filter(
+          (tx) =>
+            String(tx.description || "").toLowerCase().includes(query) ||
+            String(tx.category || "").toLowerCase().includes(query) ||
+            String(tx.tx_date || "").toLowerCase().includes(query)
+        )
+      : sourceList;
+
+    if (countEl) countEl.textContent = `${list.length} записів`;
     if (!tbody) return;
 
     if (list.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">Транзакцій поки немає.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">${query ? "Нічого не знайдено за вашим запитом." : "Операцій поки немає."}</td></tr>`;
       return;
     }
 
     tbody.innerHTML = list
       .map((tx) => {
         const isExpense = Boolean(tx.is_expense);
-        const amountClass = isExpense ? "kpi-negative" : "kpi-positive";
+        const amountClass = isExpense ? "" : "kpi-positive";
         const signedAmount = isExpense
-          ? `-${formatUAH(Math.abs(Number(tx.amount_uah || 0)))}`
+          ? `−${formatUAH(Math.abs(Number(tx.amount_uah || 0)))}`
           : formatUAH(Math.abs(Number(tx.amount_uah || 0)), true);
         const cashbackHtml =
           Number(tx.cashback_uah || 0) > 0
-            ? `<span class="tx-cashback mono-num">+${formatUAH(tx.cashback_uah)} кешбек</span>`
+            ? `<span class="tx-cashback tab-num">+${formatUAH(tx.cashback_uah)} кешбек</span>`
             : "";
 
         return `
           <tr>
-            <td class="mono-num">${escapeHtml(tx.tx_date)}</td>
+            <td class="tx-date-col tab-num">${escapeHtml(tx.tx_date)}</td>
             <td>
               <div class="tx-merchant-cell">
                 ${renderMerchantAvatar(tx.description)}
                 <div>
-                  <div>${escapeHtml(tx.description)}</div>
+                  <div class="tx-merchant-name">${escapeHtml(tx.description)}</div>
                   ${tx.comment ? `<div class="kpi-sub">${escapeHtml(tx.comment)}</div>` : ""}
                 </div>
               </div>
             </td>
-            <td><span class="category-pill">${escapeHtml(tx.category)}</span></td>
+            <td><span class="category-text">${escapeHtml(tx.category)}</span></td>
             <td class="align-right">
-              <span class="mono-num ${amountClass}">${signedAmount}</span>
+              <span class="tab-num ${amountClass}" style="font-weight:500;">${signedAmount}</span>
               ${cashbackHtml}
             </td>
           </tr>
@@ -1228,7 +1317,8 @@
   async function loadTransactions() {
     try {
       const rows = await apiRequest("/api/transactions?limit=50&offset=0");
-      renderTransactions(rows);
+      state.transactions = Array.isArray(rows) ? rows : [];
+      renderTransactions(state.transactions);
     } catch (err) {
       showToast(`Не вдалося завантажити транзакції: ${err.message}`, "err");
     }
@@ -1593,6 +1683,7 @@
     const message = (rawPrompt || "").trim();
     if (!message || state.isSending) return;
 
+    openAiDrawer(false);
     appendChatMessage("user", message);
     const input = $("chat-input");
     if (input) input.value = "";
@@ -1718,9 +1809,9 @@
       if (donePayload.used_fallback === false) {
         const aiPill = $("ai-pill");
         if (aiPill) {
-          aiPill.className = "status-pill pill-live";
+          aiPill.className = "status-text pill-live";
           const label = aiPill.querySelector(".pill-label");
-          if (label) label.textContent = "AI Live";
+          if (label) label.textContent = "Gemini підключено";
         }
       }
     } catch (streamErr) {
@@ -2126,24 +2217,18 @@
       });
     });
 
-    // Desktop Left Sidebar Navigation
-    const navAnchors = {
-      home: "home-anchor",
-      analytics: "analytics-anchor",
-      jars: "jars-section",
-      budgets: "budgets-anchor",
-    };
+    // Desktop Left Sidebar Multi-View Router
     document.querySelectorAll(".sidebar-nav-item[data-nav]").forEach((navBtn) => {
       navBtn.addEventListener("click", () => {
-        document.querySelectorAll(".sidebar-nav-item[data-nav]").forEach((item) => {
-          item.classList.remove("active");
-        });
-        navBtn.classList.add("active");
-        const navKey = navBtn.getAttribute("data-nav");
-        const anchorEl = navKey ? $(navAnchors[navKey]) : null;
-        if (anchorEl) {
-          anchorEl.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
+        const navKey = navBtn.getAttribute("data-nav") || "home";
+        setDesktopView(navKey);
+      });
+    });
+
+    document.querySelectorAll("[data-jump-view]").forEach((jumpBtn) => {
+      jumpBtn.addEventListener("click", () => {
+        const target = jumpBtn.getAttribute("data-jump-view") || "analytics";
+        setDesktopView(target);
       });
     });
 
@@ -2153,15 +2238,35 @@
     $("theme-toggle-btn")?.addEventListener("click", toggleTheme);
     $("mobile-theme-btn")?.addEventListener("click", toggleTheme);
 
-    // Quick Action Pills
+    // Sidekick AI Drawer & Topbar Quick Ask
+    $("toggle-ai-drawer-btn")?.addEventListener("click", toggleAiDrawer);
+    $("close-ai-drawer-btn")?.addEventListener("click", closeAiDrawer);
+
+    const topAskForm = $("topbar-ask-form");
+    const topAskInput = $("topbar-ask-input");
+    topAskForm?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = (topAskInput?.value || "").trim();
+      if (!q) {
+        openAiDrawer(true);
+        return;
+      }
+      if (topAskInput) topAskInput.value = "";
+      sendChatMessage(q);
+    });
+
+    // Live Transactions Table Search
+    $("tx-search-input")?.addEventListener("input", (e) => {
+      state.txFilter = e.target.value || "";
+      renderTransactions(state.transactions);
+    });
+
+    // Quick Action Buttons
     $("qa-receipt-btn")?.addEventListener("click", openReceiptModal);
     $("qa-sync-btn")?.addEventListener("click", () => openKeysModal("mono-token-input"));
     $("qa-csv-btn")?.addEventListener("click", () => openKeysModal("csv-file-input"));
     $("qa-ask-ai-btn")?.addEventListener("click", () => {
-      if (window.innerWidth <= 860) {
-        setMobileTab("chat");
-      }
-      $("chat-input")?.focus();
+      openAiDrawer(true);
     });
 
     // Period pills
@@ -2173,7 +2278,7 @@
         document.querySelectorAll(".period-pill").forEach((p) => p.classList.remove("active"));
         pill.classList.add("active");
         const indicator = $("chat-context-indicator");
-        if (indicator) indicator.textContent = `Контекст: ${days}д`;
+        if (indicator) indicator.textContent = `Період аналізу: ${days} дн`;
         loadDashboard();
       });
     });
@@ -2476,11 +2581,12 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    const savedTheme = getSessionKey(SESSION_KEYS.THEME) || "dark";
+    const savedTheme = getSessionKey(SESSION_KEYS.THEME) || "light";
     applyTheme(savedTheme, false);
     updateHumanGreeting(null);
     const params = new URLSearchParams(window.location.search);
     const initialTab = params.get("tab") || "home";
+    setDesktopView("home");
     setMobileTab(initialTab);
     registerServiceWorker();
     seedWelcomeMessage();
