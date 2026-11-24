@@ -4,17 +4,18 @@
   const SESSION_KEYS = {
     GEMINI: "monopilot_gemini_key",
     MONO: "monopilot_mono_token",
+    THEME: "monopilot_theme",
   };
 
   const CHART_PALETTE = [
     "#fa5255",
-    "#22c55e",
-    "#f59e0b",
-    "#3b82f6",
-    "#a855f7",
-    "#06b6d4",
+    "#2cc56f",
+    "#f4b740",
+    "#4da3ff",
+    "#9b8afb",
+    "#e87a5d",
+    "#38bdf8",
     "#ec4899",
-    "#14b8a6",
     "#84cc16",
     "#64748b",
   ];
@@ -287,6 +288,121 @@
     return headers;
   }
 
+  function isLightTheme() {
+    return document.body?.dataset?.theme === "light";
+  }
+
+  function applyTheme(themeName, redrawCharts = false) {
+    const next = themeName === "light" ? "light" : "dark";
+    if (document.body) {
+      document.body.dataset.theme = next;
+    }
+    setSessionKey(SESSION_KEYS.THEME, next);
+
+    const meta = $("theme-color-meta");
+    if (meta) {
+      meta.setAttribute("content", next === "light" ? "#f5f4f0" : "#111214");
+    }
+
+    const desktopLabel = $("theme-toggle-label");
+    if (desktopLabel) {
+      desktopLabel.textContent = next === "light" ? "Темна тема" : "Світла тема";
+    }
+
+    const mobileBtn = $("mobile-theme-btn");
+    if (mobileBtn) {
+      mobileBtn.textContent = next === "light" ? "Темна" : "Світла";
+    }
+
+    if (redrawCharts && state.dashboard) {
+      renderCategoriesChart(state.dashboard.categories);
+      renderDailyChart(state.dashboard.daily_series);
+    }
+  }
+
+  function toggleTheme() {
+    applyTheme(isLightTheme() ? "dark" : "light", true);
+  }
+
+  function updateHumanGreeting(data = null) {
+    const greetingEl = $("human-greeting");
+    const verdictEl = $("verdict-summary");
+    if (greetingEl) {
+      const hour = new Date().getHours();
+      let greeting = "Добрий день";
+      if (hour >= 5 && hour < 12) greeting = "Доброго ранку";
+      else if (hour >= 18 && hour < 23) greeting = "Добрий вечір";
+      else if (hour >= 23 || hour < 5) greeting = "Доброї ночі";
+      greetingEl.textContent = greeting;
+    }
+
+    if (verdictEl && data) {
+      const forecast = data.forecast || {};
+      const safeDaily = Number(forecast.safe_daily_allowance_uah || 0);
+      const balance = formatUAH(data.current_balance_uah);
+      if (forecast.status === "over_budget") {
+        verdictEl.textContent = `На картці ${balance} · витрати випереджають місячний план — варто переглянути ліміти.`;
+      } else if (safeDaily > 0) {
+        verdictEl.textContent = `На картці ${balance} · комфортно витрачати до ${formatNumber(safeDaily, 0)} ₴/день.`;
+      } else {
+        verdictEl.textContent = `На картці ${balance} · ${data.total_transactions ?? 0} операцій за ${data.period_days ?? state.days} дн.`;
+      }
+    }
+  }
+
+  const MERCHANT_AVATAR_MAP = [
+    { key: "сільпо", abbr: "СІ", bg: "rgba(244, 183, 64, 0.18)", fg: "#f59e0b" },
+    { key: "silpo", abbr: "СІ", bg: "rgba(244, 183, 64, 0.18)", fg: "#f59e0b" },
+    { key: "атб", abbr: "АТ", bg: "rgba(77, 163, 255, 0.18)", fg: "#4da3ff" },
+    { key: "novus", abbr: "NV", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
+    { key: "netflix", abbr: "NF", bg: "rgba(250, 82, 85, 0.18)", fg: "#fa5255" },
+    { key: "spotify", abbr: "SP", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
+    { key: "youtube", abbr: "YT", bg: "rgba(250, 82, 85, 0.16)", fg: "#fa5255" },
+    { key: "rozetka", abbr: "RZ", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
+    { key: "glovo", abbr: "GL", bg: "rgba(244, 183, 64, 0.2)", fg: "#f4b740" },
+    { key: "kyivstar", abbr: "KS", bg: "rgba(77, 163, 255, 0.18)", fg: "#4da3ff" },
+    { key: "apple", abbr: "AP", bg: "rgba(156, 159, 169, 0.18)", fg: "#9c9fa9" },
+    { key: "okko", abbr: "OK", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
+    { key: "wog", abbr: "WG", bg: "rgba(244, 183, 64, 0.18)", fg: "#f4b740" },
+    { key: "пошта", abbr: "НП", bg: "rgba(250, 82, 85, 0.18)", fg: "#fa5255" },
+    { key: "bolt", abbr: "BL", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
+    { key: "uber", abbr: "UB", bg: "rgba(156, 159, 169, 0.18)", fg: "#9c9fa9" },
+    { key: "catch", abbr: "CT", bg: "rgba(232, 122, 93, 0.18)", fg: "#e87a5d" },
+    { key: "зарплата", abbr: "ЗП", bg: "rgba(44, 197, 111, 0.18)", fg: "#2cc56f" },
+  ];
+
+  const AVATAR_FALLBACK_TONES = [
+    { bg: "rgba(77, 163, 255, 0.16)", fg: "#4da3ff" },
+    { bg: "rgba(44, 197, 111, 0.16)", fg: "#2cc56f" },
+    { bg: "rgba(244, 183, 64, 0.16)", fg: "#f4b740" },
+    { bg: "rgba(155, 138, 251, 0.16)", fg: "#9b8afb" },
+    { bg: "rgba(250, 82, 85, 0.16)", fg: "#fa5255" },
+  ];
+
+  function renderMerchantAvatar(rawName) {
+    const clean = String(rawName || "?").trim() || "?";
+    const lower = clean.toLowerCase();
+    const matched = MERCHANT_AVATAR_MAP.find((item) => lower.includes(item.key));
+    let abbr = matched?.abbr;
+    let tone = matched;
+
+    if (!abbr) {
+      const words = clean.replace(/[^a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+      if (words.length >= 2) {
+        abbr = `${words[0][0]}${words[1][0]}`.toUpperCase();
+      } else {
+        abbr = clean.slice(0, 2).toUpperCase();
+      }
+      let hash = 0;
+      for (let i = 0; i < lower.length; i += 1) {
+        hash = (hash * 31 + lower.charCodeAt(i)) | 0;
+      }
+      tone = AVATAR_FALLBACK_TONES[Math.abs(hash) % AVATAR_FALLBACK_TONES.length];
+    }
+
+    return `<span class="merchant-avatar" style="background:${tone.bg};color:${tone.fg};" aria-hidden="true">${escapeHtml(abbr)}</span>`;
+  }
+
   function setMobileTab(tabName) {
     const nextTab = VALID_TABS.has(tabName) ? tabName : "home";
     state.mobileTab = nextTab;
@@ -355,19 +471,19 @@
       );
 
     const formatPair = (code, entry) => {
-      if (!entry) return `<span class="ticker-item"><span class="ticker-ccy">${code}</span> <span class="mono-num">— / —</span></span>`;
+      if (!entry) return `<div class="ticker-row"><span class="ticker-ccy">${escapeHtml(code)}</span><span class="mono-num">— / —</span></div>`;
       if (entry.rate_buy && entry.rate_sell) {
-        return `<span class="ticker-item"><span class="ticker-ccy">${escapeHtml(code)}</span> <span class="mono-num">${formatNumber(entry.rate_buy, 2)} / ${formatNumber(entry.rate_sell, 2)}</span></span>`;
+        return `<div class="ticker-row"><span class="ticker-ccy">${escapeHtml(code)}</span><span class="mono-num">${formatNumber(entry.rate_buy, 2)} / ${formatNumber(entry.rate_sell, 2)}</span></div>`;
       }
       if (entry.rate_cross) {
-        return `<span class="ticker-item"><span class="ticker-ccy">${escapeHtml(code)}</span> <span class="mono-num">${formatNumber(entry.rate_cross, 2)}</span></span>`;
+        return `<div class="ticker-row"><span class="ticker-ccy">${escapeHtml(code)}</span><span class="mono-num">${formatNumber(entry.rate_cross, 2)}</span></div>`;
       }
-      return `<span class="ticker-item"><span class="ticker-ccy">${escapeHtml(code)}</span> <span class="mono-num">— / —</span></span>`;
+      return `<div class="ticker-row"><span class="ticker-ccy">${escapeHtml(code)}</span><span class="mono-num">— / —</span></div>`;
     };
 
     const usd = findRate("USD");
     const eur = findRate("EUR");
-    ticker.innerHTML = `${formatPair("USD", usd)}<span class="ticker-sep"></span>${formatPair("EUR", eur)}`;
+    ticker.innerHTML = `${formatPair("USD", usd)}${formatPair("EUR", eur)}`;
   }
 
   function renderKpis(data) {
@@ -422,6 +538,7 @@
           : "Demo";
     $("dashboard-meta").textContent =
       `Режим: ${modeLabel} · ${data.total_transactions} операцій за останні ${data.period_days} дн.`;
+    updateHumanGreeting(data);
   }
 
   function renderCategoriesChart(categories) {
@@ -461,6 +578,7 @@
 
     const topItems = list.slice(0, 8);
     const ctx = canvas.getContext("2d");
+    const light = isLightTheme();
     state.categoriesChart = new window.Chart(ctx, {
       type: "doughnut",
       data: {
@@ -469,7 +587,7 @@
           {
             data: topItems.map((c) => Number(c.total_uah || 0)),
             backgroundColor: topItems.map((_, idx) => CHART_PALETTE[idx % CHART_PALETTE.length]),
-            borderColor: "#11151e",
+            borderColor: light ? "#ffffff" : "#1a1b20",
             borderWidth: 2,
             hoverOffset: 6,
           },
@@ -478,19 +596,19 @@
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: "65%",
+        cutout: "68%",
         plugins: {
           legend: {
             position: window.innerWidth <= 540 ? "bottom" : "right",
             labels: {
-              color: "#cbd5e1",
+              color: light ? "#4b5563" : "#cbd5e1",
               boxWidth: 10,
               padding: 9,
               font: { size: 11, family: "Inter, sans-serif" },
             },
           },
           tooltip: {
-            backgroundColor: "#07090d",
+            backgroundColor: light ? "#17181c" : "#111214",
             borderColor: "rgba(255,255,255,0.14)",
             borderWidth: 1,
             callbacks: {
@@ -537,6 +655,7 @@
     if (fallback) fallback.hidden = true;
 
     const ctx = canvas.getContext("2d");
+    const light = isLightTheme();
     state.dailyChart = new window.Chart(ctx, {
       type: "bar",
       data: {
@@ -545,15 +664,15 @@
           {
             label: "Витрати",
             data: list.map((d) => Number(d.expense_uah || 0)),
-            backgroundColor: "rgba(250, 82, 85, 0.85)",
-            borderRadius: 4,
+            backgroundColor: light ? "rgba(229, 67, 70, 0.85)" : "rgba(250, 82, 85, 0.86)",
+            borderRadius: 6,
             maxBarThickness: 18,
           },
           {
             label: "Доходи",
             data: list.map((d) => Number(d.income_uah || 0)),
-            backgroundColor: "rgba(34, 197, 94, 0.82)",
-            borderRadius: 4,
+            backgroundColor: light ? "rgba(23, 155, 82, 0.85)" : "rgba(44, 197, 111, 0.84)",
+            borderRadius: 6,
             maxBarThickness: 18,
           },
         ],
@@ -567,29 +686,32 @@
         },
         scales: {
           x: {
-            ticks: { color: "#98a3b3", font: { size: 10, family: "JetBrains Mono, monospace" } },
+            ticks: {
+              color: light ? "#5c5f6a" : "#9c9fa9",
+              font: { size: 10, family: "JetBrains Mono, monospace" },
+            },
             grid: { display: false },
           },
           y: {
             beginAtZero: true,
             ticks: {
-              color: "#98a3b3",
+              color: light ? "#5c5f6a" : "#9c9fa9",
               font: { size: 10, family: "JetBrains Mono, monospace" },
               callback: (val) => `${val} ₴`,
             },
-            grid: { color: "rgba(255,255,255,0.06)" },
+            grid: { color: light ? "rgba(17,18,20,0.07)" : "rgba(255,255,255,0.06)" },
           },
         },
         plugins: {
           legend: {
             labels: {
-              color: "#cbd5e1",
+              color: light ? "#4b5563" : "#cbd5e1",
               boxWidth: 10,
               font: { size: 11, family: "Inter, sans-serif" },
             },
           },
           tooltip: {
-            backgroundColor: "#07090d",
+            backgroundColor: light ? "#17181c" : "#111214",
             borderColor: "rgba(255,255,255,0.14)",
             borderWidth: 1,
             callbacks: {
@@ -618,7 +740,10 @@
         (sub) => `
           <div class="insight-item">
             <div class="insight-row">
-              <span class="insight-title">${escapeHtml(sub.merchant)}</span>
+              <div class="insight-title-wrap">
+                ${renderMerchantAvatar(sub.merchant)}
+                <span class="insight-title">${escapeHtml(sub.merchant)}</span>
+              </div>
               <span class="insight-amount mono-num">${formatUAH(sub.avg_amount_uah)}/міс</span>
             </div>
             <div class="insight-meta">
@@ -648,7 +773,10 @@
         (item) => `
           <div class="insight-item">
             <div class="insight-row">
-              <span class="insight-title">${escapeHtml(item.description)}</span>
+              <div class="insight-title-wrap">
+                ${renderMerchantAvatar(item.description)}
+                <span class="insight-title">${escapeHtml(item.description)}</span>
+              </div>
               <span class="insight-amount kpi-negative mono-num">${formatUAH(item.amount_uah)}</span>
             </div>
             <div class="insight-meta">
@@ -692,8 +820,13 @@
           <tr>
             <td class="mono-num">${escapeHtml(tx.tx_date)}</td>
             <td>
-              <div>${escapeHtml(tx.description)}</div>
-              ${tx.comment ? `<div class="kpi-sub">${escapeHtml(tx.comment)}</div>` : ""}
+              <div class="tx-merchant-cell">
+                ${renderMerchantAvatar(tx.description)}
+                <div>
+                  <div>${escapeHtml(tx.description)}</div>
+                  ${tx.comment ? `<div class="kpi-sub">${escapeHtml(tx.comment)}</div>` : ""}
+                </div>
+              </div>
             </td>
             <td><span class="category-pill">${escapeHtml(tx.category)}</span></td>
             <td class="align-right">
@@ -1202,7 +1335,7 @@
     return `
       <details class="tool-inspector">
         <summary>
-          <span class="tool-inspector-title">🔍 Під капотом (Multi-Agent Pipeline + Tool Calls &amp; SQL)</span>
+          <span class="tool-inspector-title">Під капотом · Multi-Agent Pipeline та SQL</span>
           <div class="tool-inspector-meta">
             ${agentsBadge}
             <span class="trace-badge">${traces.length} tools</span>
@@ -1294,16 +1427,16 @@
       </div>
       <div class="live-pipeline-card">
         <div class="live-stepper" aria-label="Multi-Agent Pipeline">
-          <span class="pipeline-step is-active" data-stage="planner">🧠 Планування</span>
+          <span class="pipeline-step is-active" data-stage="planner">Планування</span>
           <span class="pipeline-arrow">→</span>
-          <span class="pipeline-step" data-stage="tools">🗄️ SQL / Tools</span>
+          <span class="pipeline-step" data-stage="tools">Аналіз і SQL</span>
           <span class="pipeline-arrow">→</span>
-          <span class="pipeline-step" data-stage="synthesizer">✍️ Синтез</span>
+          <span class="pipeline-step" data-stage="synthesizer">Відповідь</span>
         </div>
         <div class="live-tools-feed"></div>
       </div>
       <div class="msg-bubble live-answer-box">
-        <p class="streaming-placeholder">Запуск Multi-Agent оркестратора...</p>
+        <p class="streaming-placeholder">Перевіряємо операції та рахуємо...</p>
       </div>
     `;
 
@@ -1436,7 +1569,7 @@
     container.innerHTML = "";
     appendChatMessage(
       "assistant",
-      "Привіт! Я **MonoPilot AI v2.0** — Multi-Agent фінансовий копілот.\n\nЗапитайте мене про витрати, підписки, аномалії, прогноз бюджету чи курс валют. Під час аналізу ви побачите етапи агентів у реальному часі (SSE), а під кожною відповіддю відкривається інспектор **«Під капотом»** із Multi-Agent Pipeline та SQL-запитами."
+      "Привіт! Я ваш фінансовий помічник **MonoPilot AI**.\n\nМожу знайти всі регулярні підписки, пояснити незвичні витрати, підказати комфортний денний ліміт чи порахувати, на скільки швидше заповниться ваша Банка. Під кожною відповіддю є блок **«Під капотом»** із реальними цифрами та SQL-запитами."
     );
   }
 
@@ -1993,6 +2126,33 @@
       });
     });
 
+    // Desktop Left Sidebar Navigation
+    const navAnchors = {
+      home: "home-anchor",
+      analytics: "analytics-anchor",
+      jars: "jars-section",
+      budgets: "budgets-anchor",
+    };
+    document.querySelectorAll(".sidebar-nav-item[data-nav]").forEach((navBtn) => {
+      navBtn.addEventListener("click", () => {
+        document.querySelectorAll(".sidebar-nav-item[data-nav]").forEach((item) => {
+          item.classList.remove("active");
+        });
+        navBtn.classList.add("active");
+        const navKey = navBtn.getAttribute("data-nav");
+        const anchorEl = navKey ? $(navAnchors[navKey]) : null;
+        if (anchorEl) {
+          anchorEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      });
+    });
+
+    $("sidebar-receipt-btn")?.addEventListener("click", openReceiptModal);
+    $("mobile-evals-btn")?.addEventListener("click", openEvalsModal);
+    $("mobile-keys-btn")?.addEventListener("click", () => openKeysModal());
+    $("theme-toggle-btn")?.addEventListener("click", toggleTheme);
+    $("mobile-theme-btn")?.addEventListener("click", toggleTheme);
+
     // Quick Action Pills
     $("qa-receipt-btn")?.addEventListener("click", openReceiptModal);
     $("qa-sync-btn")?.addEventListener("click", () => openKeysModal("mono-token-input"));
@@ -2316,6 +2476,9 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    const savedTheme = getSessionKey(SESSION_KEYS.THEME) || "dark";
+    applyTheme(savedTheme, false);
+    updateHumanGreeting(null);
     const params = new URLSearchParams(window.location.search);
     const initialTab = params.get("tab") || "home";
     setMobileTab(initialTab);
