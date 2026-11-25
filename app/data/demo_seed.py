@@ -9,6 +9,7 @@ from app.data.database import (
     clear_transactions,
     init_db,
     seed_default_budgets,
+    seed_default_jars,
     set_sync_meta,
     upsert_transactions,
 )
@@ -278,6 +279,8 @@ def load_demo_dataset(db_path: str | None = None, reset: bool = True) -> int:
     init_db(db_path=db_path)
     if reset:
         clear_transactions(db_path=db_path)
+        seed_default_jars(db_path=db_path, reset=True)
+        set_sync_meta("mono_account_info", "", db_path=db_path)
     seed_default_budgets(db_path=db_path)
     records = generate_demo_transactions()
     inserted = upsert_transactions(records, db_path=db_path)

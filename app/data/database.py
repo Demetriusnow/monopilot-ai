@@ -352,6 +352,20 @@ def clear_transactions(
         conn.commit()
 
 
+def prepare_monobank_account_storage(
+    account_id: str,
+    db_path: str | None = None,
+) -> None:
+    """Remove demo/CSV rows and rows belonging to other accounts before Monobank sync."""
+    resolved = _ensure_db_ready(db_path)
+    with closing(_connect_rw(str(resolved))) as conn:
+        conn.execute(
+            "DELETE FROM transactions WHERE source != 'monobank' OR account_id != ?",
+            (account_id,),
+        )
+        conn.commit()
+
+
 def get_transactions(
     limit: int = 50,
     offset: int = 0,
@@ -437,7 +451,7 @@ def get_transaction_stats(db_path: str | None = None) -> dict[str, Any]:
 
     total_transactions = int(agg["total_transactions"])
     meta_mode = str(meta_row["value"]) if meta_row is not None else None
-    if mono_count > 0 or (meta_mode == "monobank" and total_transactions > 0):
+    if meta_mode == "monobank" or mono_count > 0:
         active_mode = "monobank"
     elif (meta_mode == "csv" and csv_count > 0) or (csv_count > 0 and total_transactions == csv_count):
         active_mode = "csv"
@@ -510,8 +524,8 @@ def execute_safe_select(
     }
 
 
-def seed_default_jars(db_path: str | None = None) -> None:
-    """Seed realistic Ukrainian Mono Jars ('Банки') if the jars table is empty."""
+def seed_default_jars(db_path: str | None = None, reset: bool = False) -> None:
+    """Seed realistic Ukrainian Mono Jars ('Банки') if empty or when resetting to demo."""
     now_ts = int(time.time())
     with closing(_connect_rw(db_path)) as conn:
         conn.execute(
@@ -527,6 +541,8 @@ def seed_default_jars(db_path: str | None = None) -> None:
             )
             """
         )
+        if reset:
+            conn.execute("DELETE FROM jars")
         conn.executemany(
             """
             INSERT OR IGNORE INTO jars (
@@ -535,6 +551,30 @@ def seed_default_jars(db_path: str | None = None) -> None:
             """,
             [(jid, name, icon, target, curr, monthly, now_ts) for (jid, name, icon, target, curr, monthly) in DEFAULT_JARS],
         )
+        conn.commit()
+
+
+def replace_jars_with_monobank(
+    jar_rows: list[tuple[str, str, str, float, float, float]],
+    db_path: str | None = None,
+) -> None:
+    """Replace stored jars with live Monobank jars fetched from /personal/client-info."""
+    resolved = _ensure_db_ready(db_path)
+    now_ts = int(time.time())
+    with closing(_connect_rw(str(resolved))) as conn:
+        conn.execute("DELETE FROM jars")
+        if jar_rows:
+            conn.executemany(
+                """
+                INSERT INTO jars (
+                    id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (jid, name, icon, target_uah, current_uah, monthly_uah, now_ts + idx)
+                    for idx, (jid, name, icon, target_uah, current_uah, monthly_uah) in enumerate(jar_rows)
+                ],
+            )
         conn.commit()
 
 

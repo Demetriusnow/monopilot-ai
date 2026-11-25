@@ -185,7 +185,7 @@
               <div class="account-eyebrow">
                 <span id="human-greeting">Основний рахунок</span>
                 <span class="dot-sep">·</span>
-                <span>Гривня (UAH · Чорна картка •• 4441)</span>
+                <span id="account-card-subtitle">Гривня (UAH · Чорна картка •• 4441)</span>
               </div>
               <div class="balance-main-row">
                 <div id="hero-balance-val" class="account-balance-figure tab-num">— ₴</div>
@@ -591,6 +591,13 @@
           />
           <button type="button" class="toggle-vis-btn" data-target="mono-token-input">Показати</button>
         </div>
+      </div>
+
+      <div class="form-group">
+        <label for="mono-account-select">Картка / рахунок Monobank</label>
+        <select id="mono-account-select">
+          <option value="0">Основна картка UAH (автовибір)</option>
+        </select>
       </div>
 
       <div class="form-group">

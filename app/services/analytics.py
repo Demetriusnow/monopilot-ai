@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import re
 import statistics
 from collections import defaultdict
@@ -11,6 +12,7 @@ from typing import Any
 
 from app.data.database import (
     get_budgets,
+    get_sync_meta,
     get_transaction_stats,
     get_transactions,
 )
@@ -21,6 +23,7 @@ from app.schemas import (
     CurrencyRate,
     DailySpend,
     DashboardSummary,
+    MonobankAccountOption,
     SubscriptionItem,
     TransactionRecord,
 )
@@ -405,6 +408,30 @@ def get_dashboard_summary(
     net_cashflow_uah = round(total_income_uah - total_expense_uah, 2)
     total_cashback_uah = round(sum(tx.cashback_uah for tx in window_txs), 2)
     current_balance_uah = round(all_txs[0].balance_uah, 2) if all_txs else 0.0
+    account_owner: str | None = None
+    account_label: str | None = None
+    selected_account_id: str | None = None
+    available_accounts: list[MonobankAccountOption] = []
+
+    active_mode_str = str(stats["active_mode"])
+    if active_mode_str == "monobank":
+        raw_mono_meta = get_sync_meta("mono_account_info", db_path=db_path)
+        if raw_mono_meta:
+            try:
+                parsed_meta = json.loads(raw_mono_meta)
+                if isinstance(parsed_meta, dict):
+                    if parsed_meta.get("own_balance_uah") is not None:
+                        current_balance_uah = round(float(parsed_meta["own_balance_uah"]), 2)
+                    account_owner = str(parsed_meta.get("client_name") or "").strip() or None
+                    account_label = str(parsed_meta.get("card_label") or "").strip() or None
+                    selected_account_id = str(parsed_meta.get("account_id") or "").strip() or None
+                    raw_opts = parsed_meta.get("accounts")
+                    if isinstance(raw_opts, list):
+                        available_accounts = [MonobankAccountOption(**opt) for opt in raw_opts if isinstance(opt, dict)]
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+    elif active_mode_str == "csv":
+        account_label = "Імпортована виписка (CSV)"
 
     cat_map: dict[str, list[Any]] = {}
     daily_map: dict[str, list[float]] = {
@@ -457,7 +484,7 @@ def get_dashboard_summary(
     ]
 
     return DashboardSummary(
-        mode=str(stats["active_mode"]),
+        mode=active_mode_str,
         period_days=period_days,
         total_transactions=len(window_txs),
         total_expense_uah=total_expense_uah,
@@ -465,6 +492,10 @@ def get_dashboard_summary(
         net_cashflow_uah=net_cashflow_uah,
         total_cashback_uah=total_cashback_uah,
         current_balance_uah=current_balance_uah,
+        account_owner=account_owner,
+        account_label=account_label,
+        selected_account_id=selected_account_id,
+        available_accounts=available_accounts,
         categories=categories,
         daily_series=daily_series,
         subscriptions=detect_subscriptions(db_path=db_path),

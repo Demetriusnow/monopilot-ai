@@ -145,6 +145,142 @@ def test_sync_monobank_without_token_returns_400(client: TestClient) -> None:
     assert response.status_code == 400
 
 
+def test_sync_monobank_replaces_demo_data_and_loads_client_info_and_jars(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    """Syncing Monobank wipes demo rows, computes own card balance without credit limit, and syncs Jars."""
+    now_ts = int(time.time())
+
+    class _MockResponse:
+        def __init__(self, status_code: int, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class _MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str, headers: dict | None = None):
+            assert headers and headers.get("X-Token") == "test_live_mono_token"
+            if url.endswith("/personal/client-info"):
+                return _MockResponse(
+                    200,
+                    {
+                        "name": "Дмитро Заєць",
+                        "accounts": [
+                            {
+                                "id": "acc_black_uah",
+                                "type": "black",
+                                "currencyCode": 980,
+                                "balance": 6452050,  # 14,520.50 own + 50,000.00 credit limit
+                                "creditLimit": 5000000,
+                                "maskedPan": ["537541******4821"],
+                            },
+                            {
+                                "id": "acc_white_uah",
+                                "type": "white",
+                                "currencyCode": 980,
+                                "balance": 320000,
+                                "creditLimit": 0,
+                                "maskedPan": ["537541******9910"],
+                            },
+                        ],
+                        "jars": [
+                            {
+                                "id": "jar_real_1",
+                                "title": "На ноутбук",
+                                "currencyCode": 980,
+                                "balance": 2150000,
+                                "goal": 5000000,
+                            }
+                        ],
+                    },
+                )
+            if "/personal/statement/acc_black_uah/" in url:
+                return _MockResponse(
+                    200,
+                    [
+                        {
+                            "id": "mono_tx_1",
+                            "time": now_ts - 3600,
+                            "description": "АТБ-Маркет",
+                            "mcc": 5411,
+                            "amount": -42550,
+                            "operationAmount": -42550,
+                            "currencyCode": 980,
+                            "cashbackAmount": 425,
+                            "balance": 6452050,
+                        },
+                        {
+                            "id": "mono_tx_2",
+                            "time": now_ts - 7200,
+                            "description": "Поповнення картки",
+                            "mcc": 4829,
+                            "amount": 1500000,
+                            "operationAmount": 1500000,
+                            "currencyCode": 980,
+                            "cashbackAmount": 0,
+                            "balance": 6494600,
+                        },
+                    ],
+                )
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("app.services.monobank_client.httpx.AsyncClient", _MockAsyncClient)
+
+    sync_resp = client.post(
+        "/api/data/sync-monobank",
+        headers={"X-Mono-Token": "test_live_mono_token"},
+        json={"days": 31, "account_id": "0"},
+    )
+    assert sync_resp.status_code == 200
+    sync_data = sync_resp.json()
+    assert sync_data["source"] == "monobank"
+    assert sync_data["synced_count"] == 2
+    assert sync_data["total_in_db"] == 2  # All 144 demo rows removed!
+    assert sync_data["selected_account_id"] == "acc_black_uah"
+    assert len(sync_data["accounts"]) == 2
+
+    dash_resp = client.get("/api/dashboard?days=30")
+    assert dash_resp.status_code == 200
+    dash = dash_resp.json()
+    assert dash["mode"] == "monobank"
+    assert dash["total_transactions"] == 2
+    assert dash["current_balance_uah"] == 14520.50
+    assert dash["account_owner"] == "Дмитро Заєць"
+    assert "4821" in (dash["account_label"] or "")
+
+    jars_resp = client.get("/api/jars")
+    assert jars_resp.status_code == 200
+    jars = jars_resp.json()
+    assert len(jars) == 1
+    assert jars[0]["name"] == "На ноутбук"
+    assert jars[0]["current_uah"] == 21500.0
+    assert jars[0]["target_uah"] == 50000.0
+
+    # Reset back to demo restores demo rows & default jars
+    reset_resp = client.post("/api/data/demo")
+    assert reset_resp.status_code == 200
+    dash_after = client.get("/api/dashboard?days=30").json()
+    assert dash_after["mode"] == "demo"
+    assert dash_after["account_owner"] is None
+    assert len(client.get("/api/jars").json()) >= 3
+
+
 def test_pwa_manifest_service_worker_and_icons(client: TestClient) -> None:
     """Verify PWA manifest, root-scoped service worker, and PNG app icons are served."""
     manifest_resp = client.get("/manifest.webmanifest")

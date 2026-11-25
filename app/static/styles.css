@@ -2093,7 +2093,8 @@ body.ai-open .chat-panel {
   color: var(--text-secondary);
 }
 
-.form-group input {
+.form-group input,
+.form-group select {
   width: 100%;
   height: 36px;
   padding: 0 10px;
@@ -2111,7 +2112,8 @@ body.ai-open .chat-panel {
   padding: 6px 8px;
 }
 
-.form-group input:focus {
+.form-group input:focus,
+.form-group select:focus {
   border-color: var(--text);
 }
 

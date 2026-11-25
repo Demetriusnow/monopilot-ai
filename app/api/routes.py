@@ -17,6 +17,7 @@ from app.data.database import (
     get_budgets,
     get_latest_eval_run,
     get_receipt_records,
+    get_sync_meta,
     get_transaction_stats,
     get_transactions,
     upsert_budget,
@@ -33,6 +34,8 @@ from app.schemas import (
     HealthResponse,
     JarCreateUpdateRequest,
     JarRecord,
+    MatchedTransactionSummary,
+    MonobankAccountOption,
     ReceiptScanResponse,
     SyncMonobankRequest,
     SyncResponse,
@@ -52,6 +55,7 @@ from app.services.monobank_client import (
     MonobankAuthError,
     MonobankRateLimitError,
     fetch_currency_rates,
+    list_monobank_accounts,
     sync_monobank_statement,
 )
 from app.services.receipt_scanner import scan_receipt_image
@@ -170,6 +174,26 @@ async def reload_demo_data() -> SyncResponse:
     )
 
 
+@router.get("/data/monobank-accounts", response_model=list[MonobankAccountOption])
+async def get_monobank_accounts(
+    x_mono_token: str | None = Header(default=None, alias="X-Mono-Token"),
+) -> list[MonobankAccountOption]:
+    """Return available Monobank accounts/cards for the provided or server-configured token."""
+    settings = get_settings()
+    token = (x_mono_token or settings.monobank_token or "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="Monobank token is required.",
+        )
+    try:
+        return await list_monobank_accounts(token=token)
+    except MonobankAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except MonobankRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+
 @router.post("/data/sync-monobank", response_model=SyncResponse)
 async def sync_monobank(
     payload: SyncMonobankRequest | None = Body(default=None),
@@ -198,12 +222,29 @@ async def sync_monobank(
     except MonobankRateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
 
+    selected_id: str | None = None
+    accounts: list[MonobankAccountOption] = []
+    card_info_str = ""
+    raw_meta = await asyncio.to_thread(get_sync_meta, "mono_account_info")
+    if raw_meta:
+        try:
+            meta_obj = json.loads(raw_meta)
+            selected_id = meta_obj.get("account_id")
+            if isinstance(meta_obj.get("accounts"), list):
+                accounts = [MonobankAccountOption(**opt) for opt in meta_obj["accounts"] if isinstance(opt, dict)]
+            if meta_obj.get("card_label"):
+                card_info_str = f" ({meta_obj['card_label']})"
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     return SyncResponse(
         status="ok",
         source="monobank",
         synced_count=synced_count,
         total_in_db=total_in_db,
-        message=f"Синхронізовано {synced_count} транзакцій з Monobank.",
+        selected_account_id=selected_id,
+        accounts=accounts,
+        message=f"Підключено Monobank{card_info_str}: синхронізовано {synced_count} операцій за {days} дн.",
     )
 
 

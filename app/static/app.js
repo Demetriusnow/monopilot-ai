@@ -397,17 +397,60 @@
     }
   }
 
+  function populateMonoAccountSelect(accounts = [], selectedId = null) {
+    const sel = $("mono-account-select");
+    if (!sel) return;
+    const prevVal = selectedId || sel.value || "0";
+    const opts = [`<option value="0">Основна картка UAH (автовибір)</option>`];
+    if (Array.isArray(accounts)) {
+      accounts.forEach((acc) => {
+        if (!acc?.account_id) return;
+        const balStr = `${formatNumber(acc.balance_uah ?? 0, 2)} ${acc.currency || "UAH"}`;
+        opts.push(
+          `<option value="${escapeHtml(acc.account_id)}">${escapeHtml(acc.label)} — ${escapeHtml(balStr)}</option>`
+        );
+      });
+    }
+    sel.innerHTML = opts.join("");
+    if ([...sel.options].some((o) => o.value === prevVal)) {
+      sel.value = prevVal;
+    } else {
+      sel.value = "0";
+    }
+  }
+
   function updateHumanGreeting(data = null) {
     const greetingEl = $("human-greeting");
+    const subtitleEl = $("account-card-subtitle");
     const verdictEl = $("verdict-summary");
     if (greetingEl) {
-      greetingEl.textContent = "Основний рахунок";
+      if (data?.mode === "monobank" && data?.account_owner) {
+        greetingEl.textContent = `Рахунок · ${data.account_owner}`;
+      } else {
+        greetingEl.textContent = "Основний рахунок";
+      }
+    }
+
+    if (subtitleEl) {
+      if (data?.account_label) {
+        subtitleEl.textContent = data.account_label;
+      } else if (data?.mode === "monobank") {
+        subtitleEl.textContent = "Гривня (UAH · Картка Monobank)";
+      } else {
+        subtitleEl.textContent = "Гривня (UAH · Чорна картка •• 4441 · Демо)";
+      }
+    }
+
+    if (Array.isArray(data?.available_accounts) && data.available_accounts.length > 0) {
+      populateMonoAccountSelect(data.available_accounts, data.selected_account_id);
     }
 
     if (verdictEl && data) {
       const forecast = data.forecast || {};
       const safeDaily = Number(forecast.safe_daily_allowance_uah || 0);
-      if (forecast.status === "over_budget") {
+      if (data.mode === "monobank" && Number(data.total_transactions || 0) === 0) {
+        verdictEl.textContent = "Картку Monobank підключено. За обраний період немає операцій — оберіть іншу картку в «Дані та API», якщо потрібно.";
+      } else if (forecast.status === "over_budget") {
         verdictEl.textContent = `Темп витрат перевищує встановлений місячний бюджет (${formatNumber(forecast.total_monthly_budget_uah, 0)} ₴).`;
       } else if (safeDaily > 0) {
         verdictEl.textContent = `Рекомендований денний ліміт до кінця місяця — ${formatNumber(safeDaily, 0)} ₴.`;
@@ -2410,10 +2453,63 @@
       });
     });
 
-    $("save-keys-btn")?.addEventListener("click", () => {
+    async function performMonobankSync({ closeOnSuccess = true } = {}) {
+      const monoToken = ($("mono-token-input")?.value || "").trim();
       setSessionKey(SESSION_KEYS.GEMINI, $("gemini-key-input")?.value);
-      setSessionKey(SESSION_KEYS.MONO, $("mono-token-input")?.value);
+      setSessionKey(SESSION_KEYS.MONO, monoToken);
       updateHeaderStatus();
+
+      const daysRaw = Number($("mono-days-input")?.value || 31);
+      const syncDays = Math.min(31, Math.max(1, Number.isFinite(daysRaw) ? Math.round(daysRaw) : 31));
+      const selectedAccountId = ($("mono-account-select")?.value || "0").trim() || "0";
+
+      const syncBtn = $("sync-mono-btn");
+      const saveBtn = $("save-keys-btn");
+      if (syncBtn) syncBtn.disabled = true;
+      if (saveBtn) saveBtn.disabled = true;
+      setModalFeedback("Підключення до Monobank API та завантаження реальної виписки...");
+
+      try {
+        const headers = { "Content-Type": "application/json" };
+        if (monoToken) {
+          headers["X-Mono-Token"] = monoToken;
+        }
+        const res = await apiRequest("/api/data/sync-monobank", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ days: syncDays, account_id: selectedAccountId }),
+        });
+        if (Array.isArray(res.accounts) && res.accounts.length > 0) {
+          populateMonoAccountSelect(res.accounts, res.selected_account_id);
+        }
+        setModalFeedback(res.message || `Синхронізовано ${res.synced_count} транзакцій.`);
+        showToast(res.message || "Monobank виписку синхронізовано!", "ok");
+        await refreshAll();
+        if (closeOnSuccess) {
+          closeKeysModal();
+        }
+      } catch (err) {
+        setModalFeedback(`Помилка синхронізації: ${err.message}`, true);
+        showToast(`Monobank sync помилка: ${err.message}`, "err");
+      } finally {
+        if (syncBtn) syncBtn.disabled = false;
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    }
+
+    $("save-keys-btn")?.addEventListener("click", async () => {
+      const prevMono = getSessionKey(SESSION_KEYS.MONO);
+      const nextMono = ($("mono-token-input")?.value || "").trim();
+      setSessionKey(SESSION_KEYS.GEMINI, $("gemini-key-input")?.value);
+      setSessionKey(SESSION_KEYS.MONO, nextMono);
+      updateHeaderStatus();
+
+      const activeMode = state.dashboard?.mode || state.health?.active_mode || "demo";
+      if (nextMono && (activeMode !== "monobank" || nextMono !== prevMono)) {
+        await performMonobankSync({ closeOnSuccess: true });
+        return;
+      }
+
       setModalFeedback("Ключі збережено в sessionStorage поточної вкладки.");
       showToast("Налаштування ключів оновлено", "ok");
     });
@@ -2427,37 +2523,7 @@
     });
 
     $("sync-mono-btn")?.addEventListener("click", async () => {
-      const monoToken = ($("mono-token-input")?.value || "").trim();
-      setSessionKey(SESSION_KEYS.GEMINI, $("gemini-key-input")?.value);
-      setSessionKey(SESSION_KEYS.MONO, monoToken);
-      updateHeaderStatus();
-
-      const daysRaw = Number($("mono-days-input")?.value || 31);
-      const syncDays = Math.min(31, Math.max(1, Number.isFinite(daysRaw) ? Math.round(daysRaw) : 31));
-
-      const syncBtn = $("sync-mono-btn");
-      if (syncBtn) syncBtn.disabled = true;
-      setModalFeedback("Синхронізація виписки monobank...");
-
-      try {
-        const headers = { "Content-Type": "application/json" };
-        if (monoToken) {
-          headers["X-Mono-Token"] = monoToken;
-        }
-        const res = await apiRequest("/api/data/sync-monobank", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ days: syncDays, account_id: "0" }),
-        });
-        setModalFeedback(res.message || `Синхронізовано ${res.synced_count} транзакцій.`);
-        showToast(res.message || "Monobank виписку синхронізовано!", "ok");
-        await refreshAll();
-      } catch (err) {
-        setModalFeedback(`Помилка синхронізації: ${err.message}`, true);
-        showToast(`Monobank sync помилка: ${err.message}`, "err");
-      } finally {
-        if (syncBtn) syncBtn.disabled = false;
-      }
+      await performMonobankSync({ closeOnSuccess: true });
     });
 
     // CSV Statement Upload

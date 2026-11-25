@@ -99,6 +99,16 @@ class BudgetForecast(BaseModel):
     status: Literal["on_track", "warning", "over_budget"]
 
 
+class MonobankAccountOption(BaseModel):
+    """Selectable Monobank card or account from /personal/client-info."""
+
+    account_id: str
+    label: str
+    currency: str = "UAH"
+    balance_uah: float = 0.0
+    card_type: str = "black"
+
+
 class DashboardSummary(BaseModel):
     """Full dashboard analytics payload."""
 
@@ -110,6 +120,10 @@ class DashboardSummary(BaseModel):
     net_cashflow_uah: float
     total_cashback_uah: float
     current_balance_uah: float
+    account_owner: str | None = None
+    account_label: str | None = None
+    selected_account_id: str | None = None
+    available_accounts: list[MonobankAccountOption] = Field(default_factory=list)
     categories: list[CategorySpend]
     daily_series: list[DailySpend]
     subscriptions: list[SubscriptionItem]
@@ -182,6 +196,8 @@ class SyncResponse(BaseModel):
     synced_count: int
     total_in_db: int
     message: str
+    selected_account_id: str | None = None
+    accounts: list[MonobankAccountOption] = Field(default_factory=list)
 
 
 class BudgetItem(BaseModel):

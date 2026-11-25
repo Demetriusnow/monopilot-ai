@@ -1,4 +1,4 @@
-"""Monobank Open API client for currency rates and personal card statements."""
+"""Monobank Open API client for currency rates, client info, Jars, and personal card statements."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from app.data.database import (
     get_sync_meta,
     get_transaction_stats,
     init_db,
+    prepare_monobank_account_storage,
+    replace_jars_with_monobank,
     set_sync_meta,
     upsert_transactions,
 )
 from app.data.mcc_catalog import resolve_mcc_category
-from app.schemas import CurrencyRate, TransactionRecord
+from app.schemas import CurrencyRate, MonobankAccountOption, TransactionRecord
 
 ISO_CURRENCY_CODES: dict[int, str] = {
     980: "UAH",
@@ -25,6 +27,28 @@ ISO_CURRENCY_CODES: dict[int, str] = {
     978: "EUR",
     985: "PLN",
     826: "GBP",
+}
+
+_CARD_TYPE_LABELS: dict[str, str] = {
+    "black": "Чорна картка",
+    "white": "Біла картка",
+    "platinum": "Platinum картка",
+    "iron": "IRON картка",
+    "fop": "Рахунок ФОП",
+    "yellow": "Дитяча картка",
+    "eaid": "єПідтримка",
+    "madeinukraine": "Національний кешбек",
+}
+
+_CARD_TYPE_PRIORITY: dict[str, int] = {
+    "black": 0,
+    "iron": 1,
+    "platinum": 2,
+    "white": 3,
+    "fop": 4,
+    "yellow": 5,
+    "eaid": 8,
+    "madeinukraine": 9,
 }
 
 _TARGET_PAIRS: tuple[tuple[int, int], ...] = (
@@ -40,6 +64,7 @@ _MONO_COOLDOWN_SEC = 60
 _KYIV_TZ = timezone(timedelta(hours=2))
 
 _MONOBANK_CURRENCY_URL = "https://api.monobank.ua/bank/currency"
+_MONOBANK_CLIENT_INFO_URL = "https://api.monobank.ua/personal/client-info"
 _MONOBANK_STATEMENT_URL = "https://api.monobank.ua/personal/statement"
 
 
@@ -128,7 +153,7 @@ def _parse_currency_response(data: list[dict[str, Any]]) -> list[CurrencyRate]:
         cur_b = ISO_CURRENCY_CODES.get(int(code_b), str(code_b))
         rate = CurrencyRate(
             currency_a=cur_a,
-            currency_b=cur_b,
+            currency_b="UAH" if int(code_b) == 980 else cur_b,
             pair=f"{cur_a}/{cur_b}",
             rate_buy=float(item["rateBuy"]) if item.get("rateBuy") is not None else None,
             rate_sell=float(item["rateSell"]) if item.get("rateSell") is not None else None,
@@ -185,9 +210,148 @@ async def fetch_currency_rates(
         return cached[1] if cached is not None else _static_fallback_rates()
 
 
+def _format_account_label(acc: dict[str, Any]) -> tuple[str, str, float, int]:
+    """Return (display_label, ccy_str, own_balance_uah, credit_limit_minor) for a Monobank account."""
+    ccy_code = int(acc.get("currencyCode", 980))
+    ccy = ISO_CURRENCY_CODES.get(ccy_code, str(ccy_code))
+    raw_type = str(acc.get("type") or "black").strip()
+    type_label = _CARD_TYPE_LABELS.get(raw_type.lower(), f"Картка {raw_type}")
+
+    pans = acc.get("maskedPan") or []
+    suffix = ""
+    if isinstance(pans, list) and pans:
+        pan_str = str(pans[0]).strip()
+        if len(pan_str) >= 4:
+            suffix = f" •• {pan_str[-4:]}"
+    elif acc.get("iban"):
+        iban_str = str(acc.get("iban")).strip()
+        if len(iban_str) >= 4:
+            suffix = f" •• {iban_str[-4:]}"
+
+    balance_minor = int(acc.get("balance", 0))
+    credit_limit_minor = int(acc.get("creditLimit", 0))
+    own_balance = round((balance_minor - credit_limit_minor) / 100.0, 2)
+    label = f"{type_label} ({ccy}{suffix})"
+    return label, ccy, own_balance, credit_limit_minor
+
+
+async def fetch_monobank_client_info(token: str) -> dict[str, Any]:
+    """Fetch client profile, accounts, and Jars from Monobank /personal/client-info."""
+    cleaned_token = (token or "").strip()
+    if not cleaned_token:
+        raise MonobankAuthError("Monobank API token is required.")
+
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        response = await client.get(
+            _MONOBANK_CLIENT_INFO_URL,
+            headers={"X-Token": cleaned_token},
+        )
+
+    if response.status_code in (401, 403):
+        raise MonobankAuthError("Недійсний токен Monobank (HTTP 401/403). Перевірте токен з api.monobank.ua.")
+
+    if response.status_code == 429:
+        raise MonobankRateLimitError("Забагато запитів до Monobank API (HTTP 429). Спробуйте через хвилину.")
+
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Unexpected Monobank client-info format.")
+    return data
+
+
+def _select_monobank_account(
+    accounts: list[dict[str, Any]],
+    requested_account_id: str,
+) -> tuple[str, dict[str, Any] | None, list[MonobankAccountOption]]:
+    """Resolve requested or primary UAH Monobank account and build selectable options list."""
+    options: list[MonobankAccountOption] = []
+    by_id: dict[str, dict[str, Any]] = {}
+
+    sorted_raw = sorted(
+        [a for a in accounts if isinstance(a, dict) and a.get("id")],
+        key=lambda a: (
+            0 if int(a.get("currencyCode", 980)) == 980 else 1,
+            _CARD_TYPE_PRIORITY.get(str(a.get("type") or "").lower(), 6),
+        ),
+    )
+
+    for acc in sorted_raw:
+        acc_id = str(acc["id"])
+        by_id[acc_id] = acc
+        label, ccy, own_bal, _ = _format_account_label(acc)
+        options.append(
+            MonobankAccountOption(
+                account_id=acc_id,
+                label=label,
+                currency=ccy,
+                balance_uah=own_bal,
+                card_type=str(acc.get("type") or "black"),
+            )
+        )
+
+    req = (requested_account_id or "0").strip()
+    if req and req not in ("0", "auto") and req in by_id:
+        return req, by_id[req], options
+
+    # Auto-pick best UAH account: prefer active card with non-zero balance or credit activity, else top priority UAH card
+    uah_candidates = [a for a in sorted_raw if int(a.get("currencyCode", 980)) == 980]
+    if uah_candidates:
+        active_uah = [
+            a
+            for a in uah_candidates
+            if str(a.get("type") or "").lower() not in ("eaid", "madeinukraine")
+            and (
+                (int(a.get("balance", 0)) - int(a.get("creditLimit", 0))) != 0
+                or int(a.get("balance", 0)) != 0
+            )
+        ]
+        chosen = active_uah[0] if active_uah else uah_candidates[0]
+        return str(chosen["id"]), chosen, options
+
+    if sorted_raw:
+        return str(sorted_raw[0]["id"]), sorted_raw[0], options
+
+    return req or "0", None, options
+
+
+def _sync_jars_from_client_info(
+    raw_jars: list[dict[str, Any]],
+    db_path: str | None = None,
+) -> int:
+    """Import real Monobank Jars ('Банки') from client-info into SQLite jars table."""
+    valid_rows: list[tuple[str, str, str, float, float, float]] = []
+    for raw in raw_jars:
+        if not isinstance(raw, dict):
+            continue
+        jar_id = str(raw.get("id") or "").strip()
+        title = str(raw.get("title") or "").strip()
+        if not jar_id or not title:
+            continue
+        current_val = max(0.0, round(int(raw.get("balance") or 0) / 100.0, 2))
+        goal_minor = raw.get("goal")
+        if goal_minor is not None and int(goal_minor) > 0:
+            target_val = round(int(goal_minor) / 100.0, 2)
+        else:
+            target_val = max(round(current_val * 2.0, 2), 10000.0)
+        monthly_est = max(1000.0, round((target_val - current_val) / 6.0, 0)) if target_val > current_val else 2000.0
+        valid_rows.append((f"mono_{jar_id}", title, "🫙", target_val, current_val, monthly_est))
+
+    replace_jars_with_monobank(valid_rows, db_path=db_path)
+    return len(valid_rows)
+
+
+async def list_monobank_accounts(token: str) -> list[MonobankAccountOption]:
+    """Fetch selectable Monobank cards/accounts from /personal/client-info without triggering 60s lock."""
+    info = await fetch_monobank_client_info(token)
+    _, _, options = _select_monobank_account(info.get("accounts") or [], "0")
+    return options
+
+
 def _normalize_monobank_item(
     item: dict[str, Any],
     account_id: str,
+    credit_limit_minor: int = 0,
 ) -> TransactionRecord:
     """Convert a raw Monobank statement JSON object into TransactionRecord."""
     ts = int(item["time"])
@@ -200,6 +364,8 @@ def _normalize_monobank_item(
         description=description,
         amount_minor=amount_minor,
     )
+    raw_balance_minor = int(item.get("balance", 0))
+    own_balance_uah = round((raw_balance_minor - credit_limit_minor) / 100.0, 2)
 
     return TransactionRecord(
         id=str(item["id"]),
@@ -216,7 +382,7 @@ def _normalize_monobank_item(
         operation_amount_minor=int(item.get("operationAmount", amount_minor)),
         currency_code=int(item.get("currencyCode", 980)),
         cashback_uah=round(int(item.get("cashbackAmount", 0)) / 100.0, 2),
-        balance_uah=round(int(item.get("balance", 0)) / 100.0, 2),
+        balance_uah=own_balance_uah,
         is_expense=amount_minor < 0,
         comment=str(item.get("comment") or ""),
     )
@@ -228,8 +394,9 @@ async def sync_monobank_statement(
     days: int = 31,
     db_path: str | None = None,
 ) -> tuple[int, int]:
-    """Fetch personal statement from Monobank API and upsert into SQLite."""
-    if not token or not token.strip():
+    """Fetch client-info + personal statement from Monobank API, clear demo data, and upsert into SQLite."""
+    cleaned_token = (token or "").strip()
+    if not cleaned_token:
         raise MonobankAuthError("Monobank API token is required.")
 
     if not (1 <= days <= 31):
@@ -245,22 +412,48 @@ async def sync_monobank_statement(
         if elapsed < _MONO_COOLDOWN_SEC:
             wait_sec = max(1, int(_MONO_COOLDOWN_SEC - elapsed) + 1)
             raise MonobankRateLimitError(
-                f"Monobank API cooldown active. Retry in {wait_sec} seconds."
+                f"Ліміт Monobank API (1 запит на 60 сек): зачекайте ще {wait_sec} сек."
             )
 
+    # 1. Fetch live profile, accounts, card balance, and real Jars (does not consume statement cooldown)
+    client_name = ""
+    resolved_account_id = (account_id or "0").strip() or "0"
+    card_label = "Гривня (UAH · Картка Monobank)"
+    own_balance_uah: float | None = None
+    credit_limit_minor = 0
+    options: list[MonobankAccountOption] = []
+
+    try:
+        client_info = await fetch_monobank_client_info(cleaned_token)
+        client_name = str(client_info.get("name") or "").strip()
+        resolved_account_id, chosen_acc, options = _select_monobank_account(
+            client_info.get("accounts") or [],
+            resolved_account_id,
+        )
+        if chosen_acc is not None:
+            card_label, _, own_balance_uah, credit_limit_minor = _format_account_label(chosen_acc)
+        if isinstance(client_info.get("jars"), list):
+            _sync_jars_from_client_info(client_info["jars"], db_path=db_path)
+    except (MonobankAuthError, MonobankRateLimitError):
+        raise
+    except Exception:
+        # Keep statement sync resilient if client-info has unexpected optional fields
+        pass
+
+    # 2. Fetch statement for the resolved account
     to_ts = int(time.time())
     from_ts = to_ts - (days * 86400)
-    url = f"{_MONOBANK_STATEMENT_URL}/{account_id}/{from_ts}/{to_ts}"
+    url = f"{_MONOBANK_STATEMENT_URL}/{resolved_account_id}/{from_ts}/{to_ts}"
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(url, headers={"X-Token": token.strip()})
+        response = await client.get(url, headers={"X-Token": cleaned_token})
 
     if response.status_code in (401, 403):
-        raise MonobankAuthError("Invalid or unauthorized Monobank X-Token.")
+        raise MonobankAuthError("Недійсний токен Monobank (HTTP 401/403).")
 
     if response.status_code == 429:
         raise MonobankRateLimitError(
-            "Monobank API rate limit exceeded (HTTP 429). Wait 60 seconds before retrying."
+            "Перевищено ліміт запитів Monobank API (HTTP 429). Зачекайте 60 секунд і спробуйте знову."
         )
 
     response.raise_for_status()
@@ -269,9 +462,31 @@ async def sync_monobank_statement(
         raise ValueError("Unexpected Monobank statement response format.")
 
     records = [
-        _normalize_monobank_item(item, account_id=account_id) for item in raw_items
+        _normalize_monobank_item(
+            item,
+            account_id=resolved_account_id,
+            credit_limit_minor=credit_limit_minor,
+        )
+        for item in raw_items
     ]
+
+    # 3. Replace demo/CSV/other-card rows so demo transactions NEVER pollute live Monobank data
+    prepare_monobank_account_storage(resolved_account_id, db_path=db_path)
     synced_count = upsert_transactions(records, db_path=db_path)
+
+    if own_balance_uah is None and records:
+        sorted_recs = sorted(records, key=lambda r: r.timestamp, reverse=True)
+        own_balance_uah = sorted_recs[0].balance_uah
+
+    account_meta = {
+        "client_name": client_name,
+        "account_id": resolved_account_id,
+        "card_label": card_label,
+        "own_balance_uah": own_balance_uah if own_balance_uah is not None else 0.0,
+        "credit_limit_uah": round(credit_limit_minor / 100.0, 2),
+        "accounts": [opt.model_dump() for opt in options],
+    }
+    set_sync_meta("mono_account_info", json.dumps(account_meta, ensure_ascii=False), db_path=db_path)
     set_sync_meta("last_mono_sync", str(int(time.time())), db_path=db_path)
     set_sync_meta("active_mode", "monobank", db_path=db_path)
 
