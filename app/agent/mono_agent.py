@@ -77,21 +77,68 @@ _TRANSIENT_ERROR_MARKERS: tuple[str, ...] = (
 
 def _is_missing_api_key(api_key: str) -> bool:
     """Return True when Gemini API key is absent or still set to a template placeholder."""
-    normalized = api_key.strip()
+    normalized = api_key.strip().strip("\"'").strip()
     if normalized.lower() in _PLACEHOLDER_KEYS:
         return True
     return normalized.lower().startswith("your_")
 
 
+def _is_invalid_api_key_error(exc: Exception) -> bool:
+    """Return True when Gemini explicitly rejected the API key itself (non-recoverable across models)."""
+    combined = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        marker in combined
+        for marker in ("api_key_invalid", "api key not valid", "invalid api key")
+    )
+
+
 def _is_transient_gemini_error(exc: Exception) -> bool:
-    """Return True when an exception indicates transient capacity, rate limit, or timeout."""
+    """Return True when an error warrants failing over to the next candidate Gemini model."""
+    if _is_invalid_api_key_error(exc):
+        return False
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return True
-    status_code = getattr(exc, "status_code", None)
-    if status_code in {429, 500, 502, 503, 504}:
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code in {400, 403, 404, 408, 429, 500, 502, 503, 504}:
         return True
     combined = f"{type(exc).__name__} {exc}".lower()
-    return any(marker in combined for marker in _TRANSIENT_ERROR_MARKERS)
+    if any(
+        marker in combined
+        for marker in (
+            *_TRANSIENT_ERROR_MARKERS,
+            "not_found",
+            "not found",
+            "permission_denied",
+            "readtimeout",
+            "connecttimeout",
+            "connecterror",
+        )
+    ):
+        return True
+    return False
+
+
+def _format_gemini_fallback_note(exc: Exception) -> str:
+    """Build a concise, non-sensitive Ukrainian reason note when all Gemini models fail."""
+    if _is_invalid_api_key_error(exc):
+        return (
+            "_(Gemini API ключ недійсний — перевірте `GEMINI_API_KEY` у «Дані та API» або на Render. "
+            "Відповідаю через прямий SQL-аналіз виписки:)_"
+        )
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    combined = f"{type(exc).__name__} {exc}".lower()
+    if code == 429 or "429" in combined or "resource_exhausted" in combined or "quota" in combined:
+        return (
+            "_(Тимчасово вичерпано ліміт запитів Gemini API (429) — "
+            "відповідаю через прямий SQL-аналіз виписки:)_"
+        )
+    if "timeout" in combined:
+        return (
+            "_(Перевищено час очікування відповіді Gemini API — "
+            "відповідаю через прямий SQL-аналіз виписки:)_"
+        )
+    reason_code = f" ({code})" if code else ""
+    return f"_(Gemini API тимчасово недоступний{reason_code} — відповідаю через прямий SQL-аналіз виписки:)_"
 
 
 def _strip_thought_steps(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -167,18 +214,32 @@ def _parse_tool_arguments(raw_args: Any) -> dict[str, Any]:
 
 
 _CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Кафе та ресторани", ("кафе", "ресторан", "кав", "cafe", "restaurant")),
-    ("Продукти", ("продукт", "супермаркет", "сільпо", "атб", "grocer", "food")),
-    ("Транспорт та авто", ("транспорт", "авто", "таксі", "бензин", "пальне", "bolt", "uklon", "uber", "transport")),
-    ("Підписки та сервіси", ("підписк", "сервіс", "subscription")),
-    ("Покупки та хобі", ("покупк", "хобі", "розваг", "shopping", "hobby")),
-    ("Одяг та взуття", ("одяг", "взутт", "clothes")),
-    ("Техніка та електроніка", ("технік", "електронік", "гаджет")),
-    ("Спорт та фітнес", ("спорт", "фітнес", "зал")),
-    ("Аптеки та здоров'я", ("аптек", "здоров", "ліки")),
-    ("Пошта та доставка", ("пошт", "доставк")),
-    ("Зв'язок та інтернет", ("зв'язок", "інтернет", "мобільн")),
-    ("Перекази", ("переказ",)),
+    ("Кафе та ресторани", ("кафе", "ресторан", "кав", "кофе", "glovo", "cafe", "restaurant")),
+    ("Продукти", ("продукт", "супермаркет", "їж", "еда", "еду", "гастроном", "grocer", "food")),
+    ("Транспорт та авто", ("транспорт", "авто", "таксі", "такси", "бензин", "пальне", "палив", "transport")),
+    ("Підписки та сервіси", ("підписк", "подписк", "сервіс", "сервис", "subscription")),
+    ("Покупки та хобі", ("покупк", "хобі", "хобби", "розваг", "развлеч", "shopping", "hobby")),
+    ("Одяг та взуття", ("одяг", "одежд", "взутт", "обув", "clothes")),
+    ("Техніка та електроніка", ("технік", "техник", "електронік", "электроник", "гаджет")),
+    ("Спорт та фітнес", ("спорт", "фітнес", "фитнес", "зал")),
+    ("Аптеки та здоров'я", ("аптек", "здоров", "ліки", "лекарств")),
+    ("Пошта та доставка", ("пошт", "почт", "доставк")),
+    ("Зв'язок та інтернет", ("зв'язок", "связь", "інтернет", "интернет", "мобільн", "мобильн")),
+    ("Перекази", ("переказ", "перевод")),
+)
+
+_MERCHANT_LOOKUP_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("АТБ", "атб", ("атб", "atb")),
+    ("Сільпо", "сільпо", ("сільпо", "сильпо", "silpo")),
+    ("Fora", "fora", ("фора", "fora")),
+    ("Novus", "novus", ("новус", "novus")),
+    ("Rozetka", "rozetka", ("розетк", "rozetka")),
+    ("Glovo", "glovo", ("глово", "glovo")),
+    ("Bolt", "bolt", ("болт", "bolt")),
+    ("Uklon", "uklon", ("уклон", "uklon")),
+    ("OKKO", "okko", ("окко", "okko")),
+    ("WOG", "wog", ("вог", "wog")),
+    ("Нова Пошта", "пошта", ("нова пошта", "новапошта", "новая почта")),
 )
 
 _SUBSCRIPTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -284,7 +345,7 @@ class MonoPilotAgent:
     ) -> None:
         settings = get_settings()
         raw_key = api_key if api_key is not None else settings.gemini_api_key
-        self.api_key = (raw_key or "").strip()
+        self.api_key = (raw_key or "").strip().strip("\"'").strip()
         self.model = model or settings.gemini_model
         self.fallback_models = [
             m for m in settings.fallback_model_list if m != self.model
@@ -489,7 +550,11 @@ class MonoPilotAgent:
                 used_fallback=False,
             )
         except Exception as exc:
-            logger.warning("Gemini interaction failed (%s); falling back to local mode.", type(exc).__name__)
+            logger.warning(
+                "Gemini interaction failed (%s: %s); falling back to local mode.",
+                type(exc).__name__,
+                str(exc)[:180],
+            )
             fallback_resp = await self._local_fallback(
                 message,
                 days_context,
@@ -497,10 +562,7 @@ class MonoPilotAgent:
             )
             if tool_traces:
                 fallback_resp.tool_traces = tool_traces + fallback_resp.tool_traces
-            fallback_resp.answer = (
-                "_(Примітка: запит до Gemini API не вдався, активовано локальний аналітичний режим.)_\n\n"
-                + fallback_resp.answer
-            )
+            fallback_resp.answer = f"{_format_gemini_fallback_note(exc)}\n\n{fallback_resp.answer}"
             fallback_resp.total_latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
             return fallback_resp
 
@@ -777,62 +839,215 @@ class MonoPilotAgent:
                 sections.append("**Курси валют:** наразі не вдалося отримати дані Monobank.")
 
         if not sections:
+            effective_days = days_context
+            if any(k in query for k in ("90 дн", "три місяц", "3 місяц", "квартал")):
+                effective_days = 90
+            elif any(k in query for k in ("30 дн", "за місяць", "за месяц", "цього місяця", "в этом месяце")):
+                effective_days = 30
+            elif any(k in query for k in ("7 дн", "за тиждень", "за неделю", "тиждень")):
+                effective_days = 7
+            elif any(k in query for k in ("сьогодні", "сегодня", "за день")):
+                effective_days = 1
+
+            is_broad_overview = any(
+                k in query for k in ("топ категор", "зведення", "усі категор", "всі категор", "структур")
+            )
+
+            matched_category: str | None = None
+            if not is_broad_overview:
+                for cat_name, kws in _CATEGORY_KEYWORDS:
+                    if any(kw in query for kw in kws):
+                        matched_category = cat_name
+                        break
+
+            matched_merchant: tuple[str, str] | None = None
+            if matched_category is None and not is_broad_overview:
+                for display_name, sql_like, kws in _MERCHANT_LOOKUP_KEYWORDS:
+                    if any(kw in query for kw in kws):
+                        matched_merchant = (display_name, sql_like)
+                        break
+
             sum_res = await self._run_fallback_tool(
                 "get_spending_summary",
-                {"days": days_context},
+                {"days": effective_days},
                 tool_traces,
                 on_tool_trace=on_tool_trace,
             )
 
-            sql_query = (
-                "SELECT category, COUNT(*) AS tx_count, ROUND(SUM(ABS(amount_uah)), 2) AS total_uah "
-                "FROM transactions WHERE is_expense = 1 "
-                "GROUP BY category ORDER BY total_uah DESC LIMIT 5"
-            )
-            sql_res = await self._run_fallback_tool(
-                "run_sql_analytics",
-                {"sql": sql_query},
-                tool_traces,
-                on_tool_trace=on_tool_trace,
-            )
+            if matched_category is not None:
+                safe_cat = matched_category.replace("'", "''")
+                cat_sql = (
+                    f"SELECT description, COUNT(*) AS tx_count, "
+                    f"ROUND(SUM(ABS(amount_uah)), 2) AS total_uah, MAX(tx_date) AS last_date "
+                    f"FROM transactions "
+                    f"WHERE is_expense = 1 AND category = '{safe_cat}' "
+                    f"GROUP BY description ORDER BY total_uah DESC LIMIT 8"
+                )
+                cat_sql_res = await self._run_fallback_tool(
+                    "run_sql_analytics",
+                    {"sql": cat_sql},
+                    tool_traces,
+                    on_tool_trace=on_tool_trace,
+                )
+                all_time_sql = (
+                    f"SELECT COUNT(*) AS tx_count, ROUND(COALESCE(SUM(ABS(amount_uah)), 0), 2) AS total_uah "
+                    f"FROM transactions WHERE is_expense = 1 AND category = '{safe_cat}'"
+                )
+                all_time_res = await self._run_fallback_tool(
+                    "run_sql_analytics",
+                    {"sql": all_time_sql},
+                    tool_traces,
+                    on_tool_trace=on_tool_trace,
+                )
 
-            lines = []
-            if isinstance(sum_res, dict) and "error" not in sum_res:
-                total_exp = float(sum_res.get("total_expense_uah", 0.0))
-                total_inc = float(sum_res.get("total_income_uah", 0.0))
-                cashback = float(sum_res.get("total_cashback_uah", 0.0))
-                tx_count = int(sum_res.get("tx_count", 0))
-                lines.append(f"**Фінансове зведення за останні {days_context} днів ({tx_count} операцій):**")
-                lines.append(f"- Загальні витрати: **{total_exp:,.2f} ₴**")
-                lines.append(f"- Загальні надходження: **{total_inc:,.2f} ₴**")
-                lines.append(f"- Нарахований кешбек: **{cashback:,.2f} ₴**")
+                period_cat = None
+                if isinstance(sum_res, dict):
+                    for c in sum_res.get("top_categories") or []:
+                        if c.get("category") == matched_category:
+                            period_cat = c
+                            break
 
-                top_cats = sum_res.get("top_categories") or []
-                if top_cats:
-                    lines.append("\n**Топ категорій за період:**")
-                    for cat in top_cats[:5]:
-                        lines.append(
-                            f"- {cat.get('category')}: **{float(cat.get('total_uah', 0.0)):,.2f} ₴** "
-                            f"({float(cat.get('share_pct', 0.0)):.1f}%, {cat.get('tx_count', 0)} оп.)"
-                        )
+                p_total = float(period_cat.get("total_uah", 0.0)) if period_cat else 0.0
+                p_cnt = int(period_cat.get("tx_count", 0)) if period_cat else 0
+                p_share = float(period_cat.get("share_pct", 0.0)) if period_cat else 0.0
+                avg_ticket = round(p_total / p_cnt, 2) if p_cnt > 0 else 0.0
 
-                top_merchants = sum_res.get("top_merchants") or []
-                if top_merchants:
-                    lines.append("\n**Топ мерчантів за період:**")
-                    for merch in top_merchants[:5]:
-                        lines.append(
-                            f"- {merch.get('description')}: **{float(merch.get('total_uah', 0.0)):,.2f} ₴** "
-                            f"({merch.get('tx_count', 0)} оп.)"
-                        )
+                all_total = 0.0
+                all_cnt = 0
+                if isinstance(all_time_res, dict) and all_time_res.get("rows"):
+                    r0 = all_time_res["rows"][0]
+                    all_total = float(r0.get("total_uah") or 0.0)
+                    all_cnt = int(r0.get("tx_count") or 0)
 
-            if isinstance(sql_res, dict) and sql_res.get("rows"):
-                lines.append("\n**Топ категорій за весь період в БД (SQL):**")
-                for row in sql_res["rows"]:
+                lines = []
+                if p_cnt > 0:
                     lines.append(
-                        f"- {row['category']}: **{float(row['total_uah']):,.2f} ₴** ({row['tx_count']} оп.)"
+                        f"На категорію **«{matched_category}»** за останні **{effective_days} дн.** ви витратили "
+                        f"**{p_total:,.2f} ₴** ({p_cnt} операцій, середній чек **{avg_ticket:,.2f} ₴**, "
+                        f"частка **{p_share:.1f}%** від усіх витрат за період)."
+                    )
+                else:
+                    lines.append(
+                        f"За останні **{effective_days} дн.** витрат у категорії **«{matched_category}»** не було (**0.00 ₴**)."
                     )
 
-            sections.append("\n".join(lines) if lines else "Дані транзакцій не знайдено.")
+                if all_cnt > p_cnt:
+                    lines.append(
+                        f"За весь завантажений період у виписці витрати на **«{matched_category}»** становлять "
+                        f"**{all_total:,.2f} ₴** ({all_cnt} операцій)."
+                    )
+
+                rows = cat_sql_res.get("rows") if isinstance(cat_sql_res, dict) else None
+                if rows:
+                    lines.append(f"\n**Де купували у категорії «{matched_category}»:**")
+                    for r in rows[:6]:
+                        lines.append(
+                            f"- **{r['description']}** — **{float(r['total_uah']):,.2f} ₴** "
+                            f"({r['tx_count']} оп., остання: {r['last_date']})"
+                        )
+                sections.append("\n".join(lines))
+
+            elif matched_merchant is not None:
+                disp_name, like_tok = matched_merchant
+                safe_tok = like_tok.replace("'", "''")
+                merch_sql = (
+                    f"SELECT description, COUNT(*) AS tx_count, "
+                    f"ROUND(COALESCE(SUM(ABS(amount_uah)), 0), 2) AS total_uah, "
+                    f"MIN(tx_date) AS first_date, MAX(tx_date) AS last_date "
+                    f"FROM transactions "
+                    f"WHERE is_expense = 1 AND LOWER(description) LIKE '%{safe_tok}%' "
+                    f"GROUP BY description ORDER BY total_uah DESC LIMIT 5"
+                )
+                merch_res = await self._run_fallback_tool(
+                    "run_sql_analytics",
+                    {"sql": merch_sql},
+                    tool_traces,
+                    on_tool_trace=on_tool_trace,
+                )
+                rows = merch_res.get("rows") if isinstance(merch_res, dict) else None
+                if rows:
+                    grand_total = sum(float(r.get("total_uah") or 0.0) for r in rows)
+                    grand_cnt = sum(int(r.get("tx_count") or 0) for r in rows)
+                    lines = [
+                        f"Витрати у **{disp_name}** за випискою становлять **{grand_total:,.2f} ₴** ({grand_cnt} операцій):"
+                    ]
+                    for r in rows:
+                        lines.append(
+                            f"- **{r['description']}**: **{float(r['total_uah']):,.2f} ₴** "
+                            f"({r['tx_count']} оп., остання: {r['last_date']})"
+                        )
+                    sections.append("\n".join(lines))
+                else:
+                    sections.append(f"Операцій у **{disp_name}** в поточній виписці не знайдено (**0.00 ₴**).")
+
+            elif any(k in query for k in ("кешбек", "кэшбэк", "cashback")) and "витрат" not in query:
+                if isinstance(sum_res, dict) and "error" not in sum_res:
+                    cashback = float(sum_res.get("total_cashback_uah", 0.0))
+                    total_exp = float(sum_res.get("total_expense_uah", 0.0))
+                    sections.append(
+                        f"За останні **{effective_days} дн.** вам нараховано **{cashback:,.2f} ₴** кешбеку "
+                        f"(при загальних витратах **{total_exp:,.2f} ₴**)."
+                    )
+
+            elif any(k in query for k in ("дохід", "доход", "надходж", "поповнен", "зарплат")) and "витрат" not in query:
+                if isinstance(sum_res, dict) and "error" not in sum_res:
+                    total_inc = float(sum_res.get("total_income_uah", 0.0))
+                    net_cf = float(sum_res.get("net_cashflow_uah", 0.0))
+                    sections.append(
+                        f"Загальна сума доходів та надходжень за останні **{effective_days} дн.** становить "
+                        f"**{total_inc:,.2f} ₴** (чистий грошовий потік: **{net_cf:+,.2f} ₴**)."
+                    )
+
+            else:
+                sql_query = (
+                    "SELECT category, COUNT(*) AS tx_count, ROUND(SUM(ABS(amount_uah)), 2) AS total_uah "
+                    "FROM transactions WHERE is_expense = 1 "
+                    "GROUP BY category ORDER BY total_uah DESC LIMIT 5"
+                )
+                sql_res = await self._run_fallback_tool(
+                    "run_sql_analytics",
+                    {"sql": sql_query},
+                    tool_traces,
+                    on_tool_trace=on_tool_trace,
+                )
+
+                lines = []
+                if isinstance(sum_res, dict) and "error" not in sum_res:
+                    total_exp = float(sum_res.get("total_expense_uah", 0.0))
+                    total_inc = float(sum_res.get("total_income_uah", 0.0))
+                    cashback = float(sum_res.get("total_cashback_uah", 0.0))
+                    tx_count = int(sum_res.get("tx_count", 0))
+                    lines.append(f"**Фінансове зведення за останні {effective_days} днів ({tx_count} операцій):**")
+                    lines.append(f"- Загальні витрати: **{total_exp:,.2f} ₴**")
+                    lines.append(f"- Загальні надходження: **{total_inc:,.2f} ₴**")
+                    lines.append(f"- Нарахований кешбек: **{cashback:,.2f} ₴**")
+
+                    top_cats = sum_res.get("top_categories") or []
+                    if top_cats:
+                        lines.append("\n**Топ категорій за період:**")
+                        for cat in top_cats[:5]:
+                            lines.append(
+                                f"- {cat.get('category')}: **{float(cat.get('total_uah', 0.0)):,.2f} ₴** "
+                                f"({float(cat.get('share_pct', 0.0)):.1f}%, {cat.get('tx_count', 0)} оп.)"
+                            )
+
+                    top_merchants = sum_res.get("top_merchants") or []
+                    if top_merchants:
+                        lines.append("\n**Топ мерчантів за період:**")
+                        for merch in top_merchants[:5]:
+                            lines.append(
+                                f"- {merch.get('description')}: **{float(merch.get('total_uah', 0.0)):,.2f} ₴** "
+                                f"({merch.get('tx_count', 0)} оп.)"
+                            )
+
+                if isinstance(sql_res, dict) and sql_res.get("rows"):
+                    lines.append("\n**Топ категорій за весь період в БД (SQL):**")
+                    for row in sql_res["rows"]:
+                        lines.append(
+                            f"- {row['category']}: **{float(row['total_uah']):,.2f} ₴** ({row['tx_count']} оп.)"
+                        )
+
+                sections.append("\n".join(lines) if lines else "Дані транзакцій не знайдено.")
 
         total_latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
         return ChatResponse(

@@ -340,3 +340,42 @@ async def test_agent_mid_turn_failover_strips_thought_steps(tmp_path, monkeypatc
     assert "thought" not in last_input_types
     assert "function_call" in last_input_types
     assert "function_result" in last_input_types
+
+
+@pytest.mark.asyncio
+async def test_agent_failover_on_404_code_and_targeted_category_fallback(tmp_path, monkeypatch) -> None:
+    """Agent fails over when SDK raises APIError-like .code=404, and targeted category fallback answers directly."""
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+    get_settings.cache_clear()
+
+    db_path = str(tmp_path / "agent_404_and_cat.db")
+    load_demo_dataset(db_path=db_path, reset=True)
+
+    class _Fake404Error(Exception):
+        code = 404
+
+    def _handler_404(call_kwargs: dict[str, Any]) -> Any:
+        if call_kwargs["model"] == "gemini-3.8-flash":
+            raise _Fake404Error("404 NOT_FOUND: model not found")
+        return _make_model_output_interaction("int_ok", "На продукти витрачено 1 420,79 ₴.")
+
+    try:
+        agent_live = MonoPilotAgent(
+            api_key='"fake-quoted-key"',
+            model="gemini-3.8-flash",
+            db_path=db_path,
+            client=SimpleNamespace(interactions=_ModelAwareFakeInteractions(_handler_404)),
+        )
+        assert agent_live.api_key == "fake-quoted-key"
+        live_res = await agent_live.ask("скільки я витратив на продукти", days_context=7)
+        assert live_res.used_fallback is False
+        assert live_res.model == "gemini-3.5-flash-lite"
+
+        agent_local = MonoPilotAgent(api_key="", db_path=db_path)
+        local_res = await agent_local.ask("скільки я витратив на продукти", days_context=7)
+        assert local_res.used_fallback is True
+        assert "На категорію **«Продукти»**" in local_res.answer
+        assert "Перекази:" not in local_res.answer
+    finally:
+        get_settings.cache_clear()
