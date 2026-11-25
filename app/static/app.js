@@ -1046,6 +1046,20 @@
      Mono Jars + What-If Simulator
      ===================================================================== */
 
+  const JAR_CURRENCY_SYMBOLS = {
+    UAH: "₴",
+    USD: "$",
+    EUR: "€",
+    PLN: "zł",
+    GBP: "£",
+  };
+
+  function getJarSymbol(jar) {
+    if (jar?.currency_symbol) return String(jar.currency_symbol);
+    const ccy = String(jar?.currency || "UAH").toUpperCase();
+    return JAR_CURRENCY_SYMBOLS[ccy] || ccy;
+  }
+
   function syncJarSelectOptions() {
     const select = $("whatif-jar-select");
     if (!select) return;
@@ -1063,10 +1077,10 @@
     }
 
     select.innerHTML = list
-      .map(
-        (jar) =>
-          `<option value="${escapeHtml(jar.id)}"${jar.id === state.selectedJarId ? " selected" : ""}>${escapeHtml(jar.icon || "🏺")} ${escapeHtml(jar.name)} (${formatNumber(jar.remaining_uah, 0)} ₴ до цілі)</option>`
-      )
+      .map((jar) => {
+        const sym = getJarSymbol(jar);
+        return `<option value="${escapeHtml(jar.id)}"${jar.id === state.selectedJarId ? " selected" : ""}>${escapeHtml(jar.icon || "🏺")} ${escapeHtml(jar.name)} (${formatNumber(jar.remaining_uah, 0)} ${escapeHtml(sym)} до цілі)</option>`;
+      })
       .join("");
   }
 
@@ -1083,6 +1097,7 @@
 
     grid.innerHTML = list
       .map((jar) => {
+        const sym = escapeHtml(getJarSymbol(jar));
         const pct = Math.min(100, Math.max(0, Number(jar.progress_pct || 0)));
         const isSelected = jar.id === state.selectedJarId;
         let etaText = "Вкажіть внесок";
@@ -1108,14 +1123,14 @@
               >✕</button>
             </div>
             <div class="jar-amounts-row mono-num">
-              <span class="jar-current">${formatNumber(jar.current_uah, 0)} ₴</span>
-              <span class="jar-target">із ${formatNumber(jar.target_uah, 0)} ₴ (${formatNumber(pct, 0)}%)</span>
+              <span class="jar-current">${formatNumber(jar.current_uah, 0)} ${sym}</span>
+              <span class="jar-target">із ${formatNumber(jar.target_uah, 0)} ${sym} (${formatNumber(pct, 0)}%)</span>
             </div>
             <div class="jar-progress-track">
               <div class="jar-progress-fill" style="width: ${pct.toFixed(1)}%"></div>
             </div>
             <div class="jar-card-foot">
-              <span class="mono-num">+${formatNumber(jar.monthly_contribution_uah, 0)} ₴/міс</span>
+              <span class="mono-num">+${formatNumber(jar.monthly_contribution_uah, 0)} ${sym}/міс</span>
               <span class="jar-badge-eta mono-num">${etaText}</span>
             </div>
           </div>
@@ -1134,6 +1149,9 @@
     const annualBoost = Number(sim.annual_savings_boost_uah || 0);
     const catSav = Number(sim.monthly_category_savings_uah || 0);
     const subSav = Number(sim.monthly_subscription_savings_uah || 0);
+    const jarCcy = String(sim.jar_currency || "UAH").toUpperCase();
+    const jarSym = escapeHtml(sim.jar_currency_symbol || JAR_CURRENCY_SYMBOLS[jarCcy] || "₴");
+    const fxRate = Number(sim.jar_fx_rate_to_uah || 1);
 
     let jarLine = `<span>Оберіть або створіть Банку, щоб побачити прискорення досягнення цілі.</span>`;
     if (sim.jar_name) {
@@ -1148,7 +1166,11 @@
         savedM > 0
           ? `<strong> · Швидше на ${formatNumber(savedM, 1)} міс.!</strong>`
           : "";
-      jarLine = `<span>🏺 <strong>${escapeHtml(sim.jar_name)}</strong>: <span class="mono-num">${baseM} → ${simM}</span>${savedPill}</span>`;
+      const fxHint =
+        jarCcy !== "UAH" && fxRate > 1
+          ? ` <span class="mono-num">(+${formatNumber(monthlyBoost / fxRate, 0)} ${jarSym}/міс за курсом ${formatNumber(fxRate, 2)} ₴)</span>`
+          : "";
+      jarLine = `<span>🏺 <strong>${escapeHtml(sim.jar_name)}</strong>: <span class="mono-num">${baseM} → ${simM}</span>${savedPill}${fxHint}</span>`;
     }
 
     box.innerHTML = `
@@ -1222,6 +1244,7 @@
 
   async function createJarFromForm() {
     const nameInput = $("jar-name-input");
+    const ccyInput = $("jar-currency-input");
     const targetInput = $("jar-target-input");
     const currentInput = $("jar-current-input");
     const monthlyInput = $("jar-monthly-input");
@@ -1229,6 +1252,7 @@
     const saveBtn = $("jar-save-btn");
 
     const name = (nameInput?.value || "").trim();
+    const currency = (ccyInput?.value || "UAH").trim().toUpperCase() || "UAH";
     const target = Number(targetInput?.value || 0);
     const current = Math.max(0, Number(currentInput?.value || 0));
     const monthly = Math.max(0, Number(monthlyInput?.value || 0));
@@ -1251,9 +1275,10 @@
         body: JSON.stringify({
           name,
           icon,
+          currency,
           target_uah: target,
           current_uah: Number.isFinite(current) ? current : 0,
-          monthly_contribution_uah: Number.isFinite(monthly) ? monthly : 3000,
+          monthly_contribution_uah: Number.isFinite(monthly) ? monthly : (currency === "UAH" ? 3000 : 100),
         }),
       });
       state.jars = Array.isArray(updated) ? updated : [];

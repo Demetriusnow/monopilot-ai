@@ -202,10 +202,10 @@ def test_sync_monobank_replaces_demo_data_and_loads_client_info_and_jars(
                         "jars": [
                             {
                                 "id": "jar_real_1",
-                                "title": "На ноутбук",
-                                "currencyCode": 980,
-                                "balance": 2150000,
-                                "goal": 5000000,
+                                "title": "На лето",
+                                "currencyCode": 840,
+                                "balance": 32400,
+                                "goal": 100000,
                             }
                         ],
                     },
@@ -268,9 +268,12 @@ def test_sync_monobank_replaces_demo_data_and_loads_client_info_and_jars(
     assert jars_resp.status_code == 200
     jars = jars_resp.json()
     assert len(jars) == 1
-    assert jars[0]["name"] == "На ноутбук"
-    assert jars[0]["current_uah"] == 21500.0
-    assert jars[0]["target_uah"] == 50000.0
+    assert jars[0]["name"] == "На лето"
+    assert jars[0]["currency"] == "USD"
+    assert jars[0]["currency_symbol"] == "$"
+    assert jars[0]["current_uah"] == 324.0
+    assert jars[0]["target_uah"] == 1000.0
+    assert jars[0]["monthly_contribution_uah"] == 113.0
 
     # Reset back to demo restores demo rows & default jars
     reset_resp = client.post("/api/data/demo")

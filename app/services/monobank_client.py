@@ -319,8 +319,8 @@ def _sync_jars_from_client_info(
     raw_jars: list[dict[str, Any]],
     db_path: str | None = None,
 ) -> int:
-    """Import real Monobank Jars ('Банки') from client-info into SQLite jars table."""
-    valid_rows: list[tuple[str, str, str, float, float, float]] = []
+    """Import real Monobank Jars ('Банки') with exact ISO currency (UAH/USD/EUR) into SQLite."""
+    valid_rows: list[tuple[str, str, str, str, float, float, float]] = []
     for raw in raw_jars:
         if not isinstance(raw, dict):
             continue
@@ -328,14 +328,26 @@ def _sync_jars_from_client_info(
         title = str(raw.get("title") or "").strip()
         if not jar_id or not title:
             continue
+
+        ccy_code = int(raw.get("currencyCode") or 980)
+        ccy = ISO_CURRENCY_CODES.get(ccy_code, "UAH")
+
         current_val = max(0.0, round(int(raw.get("balance") or 0) / 100.0, 2))
         goal_minor = raw.get("goal")
+        default_goal = 10000.0 if ccy == "UAH" else 1000.0
         if goal_minor is not None and int(goal_minor) > 0:
             target_val = round(int(goal_minor) / 100.0, 2)
         else:
-            target_val = max(round(current_val * 2.0, 2), 10000.0)
-        monthly_est = max(1000.0, round((target_val - current_val) / 6.0, 0)) if target_val > current_val else 2000.0
-        valid_rows.append((f"mono_{jar_id}", title, "🫙", target_val, current_val, monthly_est))
+            target_val = max(round(current_val * 2.0, 2), default_goal)
+
+        min_monthly = 500.0 if ccy == "UAH" else 25.0
+        fallback_monthly = 2000.0 if ccy == "UAH" else 100.0
+        monthly_est = (
+            max(min_monthly, round((target_val - current_val) / 6.0, 0))
+            if target_val > current_val
+            else fallback_monthly
+        )
+        valid_rows.append((f"mono_{jar_id}", title, "🫙", ccy, target_val, current_val, monthly_est))
 
     replace_jars_with_monobank(valid_rows, db_path=db_path)
     return len(valid_rows)
@@ -403,19 +415,9 @@ async def sync_monobank_statement(
         raise ValueError("days must be between 1 and 31.")
 
     init_db(db_path=db_path)
-    last_sync_raw = get_sync_meta("last_mono_sync", db_path=db_path)
-    if last_sync_raw is not None:
-        try:
-            elapsed = time.time() - float(last_sync_raw)
-        except ValueError:
-            elapsed = _MONO_COOLDOWN_SEC + 1
-        if elapsed < _MONO_COOLDOWN_SEC:
-            wait_sec = max(1, int(_MONO_COOLDOWN_SEC - elapsed) + 1)
-            raise MonobankRateLimitError(
-                f"Ліміт Monobank API (1 запит на 60 сек): зачекайте ще {wait_sec} сек."
-            )
 
-    # 1. Fetch live profile, accounts, card balance, and real Jars (does not consume statement cooldown)
+    # 1. Always fetch live profile, accounts, card balance, and real Jars first
+    #    (/personal/client-info does NOT share the 60-second /personal/statement lock)
     client_name = ""
     resolved_account_id = (account_id or "0").strip() or "0"
     card_label = "Гривня (UAH · Картка Monobank)"
@@ -437,8 +439,41 @@ async def sync_monobank_statement(
     except (MonobankAuthError, MonobankRateLimitError):
         raise
     except Exception:
-        # Keep statement sync resilient if client-info has unexpected optional fields
         pass
+
+    # Check 60s statement cooldown: if same account was already synced <60s ago, save refreshed
+    # client-info & Jars immediately and return existing statement count without hitting HTTP 429
+    last_sync_raw = get_sync_meta("last_mono_sync", db_path=db_path)
+    if last_sync_raw is not None:
+        try:
+            elapsed = time.time() - float(last_sync_raw)
+        except ValueError:
+            elapsed = _MONO_COOLDOWN_SEC + 1
+        if elapsed < _MONO_COOLDOWN_SEC:
+            prev_meta_raw = get_sync_meta("mono_account_info", db_path=db_path)
+            prev_acc_id = None
+            if prev_meta_raw:
+                try:
+                    prev_acc_id = json.loads(prev_meta_raw).get("account_id")
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    prev_acc_id = None
+            current_stats = get_transaction_stats(db_path=db_path)
+            if current_stats.get("active_mode") == "monobank" and prev_acc_id == resolved_account_id:
+                account_meta = {
+                    "client_name": client_name,
+                    "account_id": resolved_account_id,
+                    "card_label": card_label,
+                    "own_balance_uah": own_balance_uah if own_balance_uah is not None else 0.0,
+                    "credit_limit_uah": round(credit_limit_minor / 100.0, 2),
+                    "accounts": [opt.model_dump() for opt in options],
+                }
+                set_sync_meta("mono_account_info", json.dumps(account_meta, ensure_ascii=False), db_path=db_path)
+                return int(current_stats["total_transactions"]), int(current_stats["total_transactions"])
+
+            wait_sec = max(1, int(_MONO_COOLDOWN_SEC - elapsed) + 1)
+            raise MonobankRateLimitError(
+                f"Ліміт Monobank API на виписку (1 запит на 60 сек): зачекайте ще {wait_sec} сек."
+            )
 
     # 2. Fetch statement for the resolved account
     to_ts = int(time.time())

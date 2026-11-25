@@ -46,9 +46,10 @@ SYSTEM_INSTRUCTION = """Ти — MonoPilot AI, персональний банк
    - `id` (TEXT) — унікальний ідентифікатор банки (наприклад, `'jar_macbook'`)
    - `name` (TEXT) — назва цілі накопичення (наприклад, `'MacBook Pro M4'`)
    - `icon` (TEXT) — емодзі-іконка
-   - `target_uah` (REAL) — цільова сума у грн
-   - `current_uah` (REAL) — поточно накопичена сума у грн
-   - `monthly_contribution_uah` (REAL) — регулярний щомісячний внесок у грн
+   - `currency` (TEXT) — валюта банки (`'UAH'`, `'USD'`, `'EUR'`)
+   - `target_uah` (REAL) — цільова сума у валюті банки (`currency`)
+   - `current_uah` (REAL) — поточно накопичена сума у валюті банки (`currency`)
+   - `monthly_contribution_uah` (REAL) — регулярний щомісячний внесок у валюті банки (`currency`)
 
 ПРАВИЛА РОБОТИ (СУВОРІ):
 1. НІКОЛИ не вигадуй числа, суми, транзакції, дати, курси валют або категорії та НЕ рахуй суми в голові.
@@ -620,17 +621,18 @@ class MonoPilotAgent:
             if isinstance(jars_res, list) and jars_res:
                 lines = [f"**Ваші Mono Банки накопичень ({len(jars_res)}):**"]
                 for jar in jars_res:
+                    sym = str(jar.get("currency_symbol") or "₴")
                     months = jar.get("months_to_goal")
                     horizon = (
                         f"~{float(months):.1f} міс."
                         if months is not None
-                        else "ціль досягнута / внесок 0 ₴"
+                        else f"ціль досягнута / внесок 0 {sym}"
                     )
                     lines.append(
                         f"- {jar.get('icon', '🏺')} **{jar.get('name')}**: "
-                        f"**{float(jar.get('current_uah', 0.0)):,.2f} ₴** / {float(jar.get('target_uah', 0.0)):,.2f} ₴ "
-                        f"({float(jar.get('progress_pct', 0.0)):.1f}%, залишилось {float(jar.get('remaining_uah', 0.0)):,.2f} ₴, "
-                        f"внесок {float(jar.get('monthly_contribution_uah', 0.0)):,.2f} ₴/міс, горизонт: {horizon})"
+                        f"**{float(jar.get('current_uah', 0.0)):,.2f} {sym}** / {float(jar.get('target_uah', 0.0)):,.2f} {sym} "
+                        f"({float(jar.get('progress_pct', 0.0)):.1f}%, залишилось {float(jar.get('remaining_uah', 0.0)):,.2f} {sym}, "
+                        f"внесок {float(jar.get('monthly_contribution_uah', 0.0)):,.2f} {sym}/міс, горизонт: {horizon})"
                     )
                 sections.append("\n".join(lines))
             elif isinstance(jars_res, dict) and "error" in jars_res:

@@ -276,6 +276,8 @@ class JarRecord(BaseModel):
     id: str
     name: str
     icon: str
+    currency: str = "UAH"
+    currency_symbol: str = "₴"
     target_uah: float
     current_uah: float
     monthly_contribution_uah: float
@@ -290,6 +292,7 @@ class JarCreateUpdateRequest(BaseModel):
     id: str | None = None
     name: str
     icon: str = "🏺"
+    currency: str = "UAH"
     target_uah: float = Field(..., gt=0)
     current_uah: float = Field(0.0, ge=0)
     monthly_contribution_uah: float = Field(3000.0, ge=0)
@@ -313,6 +316,9 @@ class WhatIfSimulationResponse(BaseModel):
     total_new_monthly_savings_uah: float
     annual_savings_boost_uah: float
     jar_name: str | None = None
+    jar_currency: str = "UAH"
+    jar_currency_symbol: str = "₴"
+    jar_fx_rate_to_uah: float = 1.0
     jar_remaining_uah: float = 0.0
     baseline_months: float | None = None
     simulated_months: float | None = None

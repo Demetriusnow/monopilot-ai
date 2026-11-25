@@ -368,16 +368,24 @@
               <input id="jar-name-input" type="text" required maxlength="60" placeholder="Наприклад, MacBook або Резерв" />
             </div>
             <div class="jar-form-field">
-              <label for="jar-target-input">Цільова сума (₴)</label>
-              <input id="jar-target-input" type="number" required min="100" step="100" placeholder="50000" />
+              <label for="jar-currency-input">Валюта</label>
+              <select id="jar-currency-input" aria-label="Валюта Банки">
+                <option value="UAH" selected>UAH (₴)</option>
+                <option value="USD">USD ($)</option>
+                <option value="EUR">EUR (€)</option>
+              </select>
             </div>
             <div class="jar-form-field">
-              <label for="jar-current-input">Вже відкладено (₴)</label>
-              <input id="jar-current-input" type="number" min="0" step="100" value="0" />
+              <label for="jar-target-input">Цільова сума</label>
+              <input id="jar-target-input" type="number" required min="10" step="10" placeholder="50000" />
             </div>
             <div class="jar-form-field">
-              <label for="jar-monthly-input">Плановий внесок / міс (₴)</label>
-              <input id="jar-monthly-input" type="number" min="0" step="100" value="5000" />
+              <label for="jar-current-input">Вже відкладено</label>
+              <input id="jar-current-input" type="number" min="0" step="10" value="0" />
+            </div>
+            <div class="jar-form-field">
+              <label for="jar-monthly-input">Плановий внесок / міс</label>
+              <input id="jar-monthly-input" type="number" min="0" step="10" value="5000" />
             </div>
             <div class="jar-form-submit">
               <button id="jar-save-btn" type="submit" class="btn btn-primary btn-sm">Зберегти</button>

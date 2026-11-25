@@ -170,6 +170,7 @@ def init_db(db_path: str | None = None) -> None:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 icon TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'UAH',
                 target_uah REAL NOT NULL,
                 current_uah REAL NOT NULL,
                 monthly_contribution_uah REAL NOT NULL,
@@ -204,6 +205,11 @@ def init_db(db_path: str | None = None) -> None:
             );
             """
         )
+        jar_cols = {
+            str(r[1]) for r in conn.execute("PRAGMA table_info(jars)").fetchall()
+        }
+        if "currency" not in jar_cols:
+            conn.execute("ALTER TABLE jars ADD COLUMN currency TEXT NOT NULL DEFAULT 'UAH'")
         budget_count = conn.execute("SELECT COUNT(*) FROM budgets").fetchone()[0]
         jar_count = conn.execute("SELECT COUNT(*) FROM jars").fetchone()[0]
         conn.commit()
@@ -534,6 +540,7 @@ def seed_default_jars(db_path: str | None = None, reset: bool = False) -> None:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 icon TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'UAH',
                 target_uah REAL NOT NULL,
                 current_uah REAL NOT NULL,
                 monthly_contribution_uah REAL NOT NULL,
@@ -541,21 +548,26 @@ def seed_default_jars(db_path: str | None = None, reset: bool = False) -> None:
             )
             """
         )
+        jar_cols = {
+            str(r[1]) for r in conn.execute("PRAGMA table_info(jars)").fetchall()
+        }
+        if "currency" not in jar_cols:
+            conn.execute("ALTER TABLE jars ADD COLUMN currency TEXT NOT NULL DEFAULT 'UAH'")
         if reset:
             conn.execute("DELETE FROM jars")
         conn.executemany(
             """
             INSERT OR IGNORE INTO jars (
-                id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, name, icon, currency, target_uah, current_uah, monthly_contribution_uah, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [(jid, name, icon, target, curr, monthly, now_ts) for (jid, name, icon, target, curr, monthly) in DEFAULT_JARS],
+            [(jid, name, icon, "UAH", target, curr, monthly, now_ts) for (jid, name, icon, target, curr, monthly) in DEFAULT_JARS],
         )
         conn.commit()
 
 
 def replace_jars_with_monobank(
-    jar_rows: list[tuple[str, str, str, float, float, float]],
+    jar_rows: list[tuple[str, str, str, str, float, float, float]],
     db_path: str | None = None,
 ) -> None:
     """Replace stored jars with live Monobank jars fetched from /personal/client-info."""
@@ -567,12 +579,12 @@ def replace_jars_with_monobank(
             conn.executemany(
                 """
                 INSERT INTO jars (
-                    id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    id, name, icon, currency, target_uah, current_uah, monthly_contribution_uah, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    (jid, name, icon, target_uah, current_uah, monthly_uah, now_ts + idx)
-                    for idx, (jid, name, icon, target_uah, current_uah, monthly_uah) in enumerate(jar_rows)
+                    (jid, name, icon, ccy, target_uah, current_uah, monthly_uah, now_ts + idx)
+                    for idx, (jid, name, icon, ccy, target_uah, current_uah, monthly_uah) in enumerate(jar_rows)
                 ],
             )
         conn.commit()
@@ -583,7 +595,7 @@ def get_jars(db_path: str | None = None) -> list[dict[str, Any]]:
     resolved = _ensure_db_ready(db_path)
     with closing(_connect_rw(str(resolved))) as conn:
         rows = conn.execute(
-            "SELECT id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at "
+            "SELECT id, name, icon, currency, target_uah, current_uah, monthly_contribution_uah, created_at "
             "FROM jars ORDER BY created_at ASC, name ASC"
         ).fetchall()
     return [dict(row) for row in rows]
@@ -596,20 +608,23 @@ def upsert_jar(
     target_uah: float,
     current_uah: float,
     monthly_contribution_uah: float,
+    currency: str = "UAH",
     db_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Create or update a Mono Savings Jar and return all jars."""
     resolved = _ensure_db_ready(db_path)
     now_ts = int(time.time())
+    clean_ccy = (currency or "UAH").strip().upper() or "UAH"
     with closing(_connect_rw(str(resolved))) as conn:
         conn.execute(
             """
             INSERT INTO jars (
-                id, name, icon, target_uah, current_uah, monthly_contribution_uah, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, name, icon, currency, target_uah, current_uah, monthly_contribution_uah, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 icon = excluded.icon,
+                currency = excluded.currency,
                 target_uah = excluded.target_uah,
                 current_uah = excluded.current_uah,
                 monthly_contribution_uah = excluded.monthly_contribution_uah
@@ -618,6 +633,7 @@ def upsert_jar(
                 jar_id,
                 name.strip(),
                 (icon or "🏺").strip() or "🏺",
+                clean_ccy,
                 round(float(target_uah), 2),
                 round(float(current_uah), 2),
                 round(float(monthly_contribution_uah), 2),

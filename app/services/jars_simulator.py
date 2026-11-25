@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
-from app.data.database import delete_jar, get_jars, upsert_jar
+from app.data.database import delete_jar, get_jars, get_sync_meta, upsert_jar
 from app.schemas import (
     JarCreateUpdateRequest,
     JarRecord,
@@ -14,9 +15,48 @@ from app.schemas import (
 )
 from app.services.analytics import detect_subscriptions, get_dashboard_summary
 
+CURRENCY_SYMBOLS: dict[str, str] = {
+    "UAH": "₴",
+    "USD": "$",
+    "EUR": "€",
+    "PLN": "zł",
+    "GBP": "£",
+}
+
+_FALLBACK_FX_TO_UAH: dict[str, float] = {
+    "UAH": 1.0,
+    "USD": 41.75,
+    "EUR": 45.30,
+    "PLN": 10.35,
+    "GBP": 52.80,
+}
+
+
+def _resolve_fx_rate_to_uah(currency: str, db_path: str | None = None) -> float:
+    """Resolve UAH conversion rate for foreign-currency Jars using cached Monobank FX or fallback."""
+    ccy = (currency or "UAH").strip().upper()
+    if ccy == "UAH":
+        return 1.0
+
+    raw_cache = get_sync_meta("currency_cache", db_path=db_path)
+    if raw_cache:
+        try:
+            payload = json.loads(raw_cache)
+            for item in payload.get("rates", []):
+                if str(item.get("currency_a") or "").upper() == ccy and str(item.get("currency_b") or "").upper() == "UAH":
+                    rate = item.get("rate_sell") or item.get("rate_cross") or item.get("rate_buy")
+                    if rate and float(rate) > 0:
+                        return round(float(rate), 4)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    return _FALLBACK_FX_TO_UAH.get(ccy, 1.0)
+
 
 def _enrich_jar(raw: dict[str, Any]) -> JarRecord:
-    """Enrich a raw SQLite jar dictionary with progress percentage and goal horizon."""
+    """Enrich a raw SQLite jar dictionary with currency symbol, progress percentage, and goal horizon."""
+    ccy = str(raw.get("currency") or "UAH").strip().upper() or "UAH"
+    sym = CURRENCY_SYMBOLS.get(ccy, ccy)
     target = round(float(raw["target_uah"]), 2)
     curr = round(float(raw["current_uah"]), 2)
     monthly = round(float(raw["monthly_contribution_uah"]), 2)
@@ -40,6 +80,8 @@ def _enrich_jar(raw: dict[str, Any]) -> JarRecord:
         id=str(raw["id"]),
         name=str(raw["name"]),
         icon=str(raw["icon"]),
+        currency=ccy,
+        currency_symbol=sym,
         target_uah=target,
         current_uah=curr,
         monthly_contribution_uah=monthly,
@@ -69,6 +111,7 @@ def create_or_update_jar(
         jar_id=jar_id,
         name=cleaned_name,
         icon=req.icon,
+        currency=req.currency,
         target_uah=req.target_uah,
         current_uah=req.current_uah,
         monthly_contribution_uah=req.monthly_contribution_uah,
@@ -89,7 +132,7 @@ def simulate_what_if(
     req: WhatIfRequest,
     db_path: str | None = None,
 ) -> WhatIfSimulationResponse:
-    """Simulate monthly/annual savings boost and Jar timeline acceleration."""
+    """Simulate monthly/annual savings boost and Jar timeline acceleration (with FX support for USD/EUR Jars)."""
     jars = list_jars_enriched(db_path=db_path)
 
     selected_jar: JarRecord | None = None
@@ -162,11 +205,17 @@ def simulate_what_if(
                     }
                 )
 
-    baseline = (
+    jar_ccy = selected_jar.currency if selected_jar is not None else "UAH"
+    jar_sym = selected_jar.currency_symbol if selected_jar is not None else "₴"
+    fx_rate = _resolve_fx_rate_to_uah(jar_ccy, db_path=db_path)
+
+    baseline_in_jar_ccy = (
         round(selected_jar.monthly_contribution_uah, 2)
         if selected_jar is not None
         else 0.0
     )
+    baseline_uah = round(baseline_in_jar_ccy * fx_rate, 2)
+
     cat_save = round(monthly_category_savings, 2)
     sub_save = round(monthly_subscription_savings, 2)
     extra = round(max(0.0, float(req.extra_monthly_uah)), 2)
@@ -180,8 +229,9 @@ def simulate_what_if(
             }
         )
 
-    total_new = round(baseline + cat_save + sub_save + extra, 2)
-    annual_boost = round((cat_save + sub_save + extra) * 12.0, 2)
+    monthly_boost_uah = round(cat_save + sub_save + extra, 2)
+    total_new_uah = round(baseline_uah + monthly_boost_uah, 2)
+    annual_boost = round(monthly_boost_uah * 12.0, 2)
 
     jar_name = selected_jar.name if selected_jar is not None else None
     jar_remaining = (
@@ -198,22 +248,31 @@ def simulate_what_if(
             simulated_months = 0.0
             months_saved = 0.0
         else:
+            boost_in_jar_ccy = monthly_boost_uah / fx_rate if fx_rate > 0 else monthly_boost_uah
+            total_new_in_jar_ccy = baseline_in_jar_ccy + boost_in_jar_ccy
             baseline_months = (
-                round(jar_remaining / baseline, 1) if baseline > 0 else None
+                round(jar_remaining / baseline_in_jar_ccy, 1)
+                if baseline_in_jar_ccy > 0
+                else None
             )
             simulated_months = (
-                round(jar_remaining / total_new, 1) if total_new > 0 else None
+                round(jar_remaining / total_new_in_jar_ccy, 1)
+                if total_new_in_jar_ccy > 0
+                else None
             )
             if baseline_months is not None and simulated_months is not None:
                 months_saved = round(max(0.0, baseline_months - simulated_months), 1)
 
     return WhatIfSimulationResponse(
-        baseline_monthly_savings_uah=baseline,
+        baseline_monthly_savings_uah=baseline_uah,
         monthly_category_savings_uah=cat_save,
         monthly_subscription_savings_uah=sub_save,
-        total_new_monthly_savings_uah=total_new,
+        total_new_monthly_savings_uah=total_new_uah,
         annual_savings_boost_uah=annual_boost,
         jar_name=jar_name,
+        jar_currency=jar_ccy,
+        jar_currency_symbol=jar_sym,
+        jar_fx_rate_to_uah=fx_rate,
         jar_remaining_uah=jar_remaining,
         baseline_months=baseline_months,
         simulated_months=simulated_months,

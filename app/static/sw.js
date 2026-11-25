@@ -1,4 +1,4 @@
-const CACHE_NAME = "monopilot-shell-v3";
+const CACHE_NAME = "monopilot-shell-v4";
 
 const APP_SHELL_ASSETS = [
   "/",
