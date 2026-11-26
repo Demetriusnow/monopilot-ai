@@ -1,11 +1,14 @@
 # MonoPilot AI v2.0
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-monopilot--ai.onrender.com-111827?logo=render&logoColor=white)](https://monopilot-ai.onrender.com)
 [![MonoPilot AI CI](https://github.com/Demetriusnow/monopilot-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Demetriusnow/monopilot-ai/actions/workflows/ci.yml)
 ![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
 ![Gemini API](https://img.shields.io/badge/Gemini-Interactions%20API-4285F4?logo=google&logoColor=white)
 ![Evals 20/20](https://img.shields.io/badge/Evals-100%25%20Accuracy%20%26%20Security-22c55e)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Demetriusnow/monopilot-ai)
+
+**Live Web App & PWA:** [https://monopilot-ai.onrender.com](https://monopilot-ai.onrender.com) · **Swagger API Docs:** [https://monopilot-ai.onrender.com/docs](https://monopilot-ai.onrender.com/docs)
 
 > **English Summary for Reviewers:** MonoPilot AI v2.0 is a production-structured fintech analytics copilot built with **FastAPI**, **SQLite**, **Monobank Open API**, and **Gemini 3.8 Flash (`google-genai` Interactions API)**. v2.0 upgrades the platform with a **Multi-Agent Orchestrator & Live SSE Streaming** (`Planner → SQL Analyst / Risk Auditor / Savings Strategist → Synthesizer`), a **Multimodal Receipt Vision Scanner** with structured JSON schema extraction and SQLite transaction reconciliation, **Mono Jars (`Банки`) + Interactive What-If Savings Simulator**, and an automated **20-Case Golden Benchmark & Red-Team Security Lab** achieving **100.0% numeric accuracy**, **100.0% tool accuracy**, and **100.0% prompt/SQL injection block rate** in deterministic evaluation mode. Works out-of-the-box with zero API keys and upgrades seamlessly to live Monobank statements and Gemini tool-calling via `sessionStorage` or `.env`.
 
