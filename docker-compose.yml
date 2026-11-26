@@ -8,7 +8,7 @@ services:
       - path: .env
         required: false
     environment:
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       DATABASE_PATH: /app/data/monopilot.db
       APP_HOST: 0.0.0.0
       APP_PORT: 8000

@@ -15,6 +15,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Literal
 
+from app.agent.mono_agent import _is_missing_api_key
 from app.agent.orchestrator import MultiAgentOrchestrator, is_prompt_injection_attempt
 from app.config import get_settings
 from app.data.database import (
@@ -359,8 +360,12 @@ async def run_benchmark(
     effective_key = (
         ""
         if mode == "deterministic"
-        else ((api_key or "").strip() or settings.gemini_api_key.strip())
+        else ((api_key or "").strip().strip("\"'").strip() or settings.gemini_api_key.strip().strip("\"'").strip())
     )
+    if mode == "live" and _is_missing_api_key(effective_key):
+        raise ValueError(
+            "Для перевірки Live LLM додайте дійсний GEMINI_API_KEY у «Дані та API» або в змінні середовища Render."
+        )
 
     case_results: list[EvalCaseResult] = []
 
@@ -369,49 +374,97 @@ async def run_benchmark(
         await asyncio.to_thread(init_db, db_path=eval_db)
         await asyncio.to_thread(load_demo_dataset, db_path=eval_db, reset=True)
         await asyncio.to_thread(seed_default_jars, db_path=eval_db)
-        if mode == "deterministic":
-            await asyncio.to_thread(_seed_offline_currency_cache, eval_db)
+        await asyncio.to_thread(_seed_offline_currency_cache, eval_db)
 
         ground_truths = await asyncio.to_thread(_compute_ground_truths, eval_db)
+        eval_model = "gemini-3.5-flash-lite" if mode == "live" else None
         orchestrator = MultiAgentOrchestrator(
             api_key=effective_key,
+            model=eval_model,
             db_path=eval_db,
         )
 
-        for case in cases:
-            suite = str(case["suite"])
-            if suite == "redteam":
-                result = await _evaluate_redteam_case(case, orchestrator, eval_db)
-                case_results.append(result)
-                continue
+        if mode == "live":
+            sem = asyncio.Semaphore(3)
+            indexed_results: dict[int, EvalCaseResult] = {}
 
-            prompt = str(case["prompt"])
-            started = time.perf_counter()
-            try:
-                response = await orchestrator.run(prompt, days_context=30)
-                latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
-                if suite == "numeric":
-                    result = _evaluate_numeric_case(
-                        case, response, ground_truths, latency_ms
+            for idx, case in enumerate(cases):
+                if str(case["suite"]) == "redteam":
+                    indexed_results[idx] = await _evaluate_redteam_case(case, orchestrator, eval_db)
+
+            async def _run_single_live_case(idx: int, case: dict[str, Any]) -> None:
+                suite = str(case["suite"])
+                prompt = str(case["prompt"])
+                async with sem:
+                    started = time.perf_counter()
+                    try:
+                        response = await orchestrator.run(prompt, days_context=30)
+                        latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+                        if suite == "numeric":
+                            indexed_results[idx] = _evaluate_numeric_case(
+                                case, response, ground_truths, latency_ms
+                            )
+                        elif suite == "tool":
+                            indexed_results[idx] = _evaluate_tool_case(case, response, latency_ms)
+                        else:
+                            raise ValueError(f"Unsupported benchmark suite: {suite}")
+                    except Exception as exc:
+                        latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+                        indexed_results[idx] = EvalCaseResult(
+                            case_id=str(case["case_id"]),
+                            suite=suite,  # type: ignore[arg-type]
+                            prompt=prompt,
+                            passed=False,
+                            expected_summary=str(case["expected_summary"]),
+                            actual_summary=f"Exception: {exc}",
+                            tools_called=[],
+                            latency_ms=latency_ms,
+                            reason=f"FAIL: виняток під час виконання: {exc}",
+                        )
+
+            await asyncio.gather(
+                *[
+                    _run_single_live_case(idx, case)
+                    for idx, case in enumerate(cases)
+                    if str(case["suite"]) != "redteam"
+                ]
+            )
+            case_results = [indexed_results[idx] for idx in range(len(cases))]
+        else:
+            for case in cases:
+                suite = str(case["suite"])
+                if suite == "redteam":
+                    result = await _evaluate_redteam_case(case, orchestrator, eval_db)
+                    case_results.append(result)
+                    continue
+
+                prompt = str(case["prompt"])
+                started = time.perf_counter()
+                try:
+                    response = await orchestrator.run(prompt, days_context=30)
+                    latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+                    if suite == "numeric":
+                        result = _evaluate_numeric_case(
+                            case, response, ground_truths, latency_ms
+                        )
+                    elif suite == "tool":
+                        result = _evaluate_tool_case(case, response, latency_ms)
+                    else:
+                        raise ValueError(f"Unsupported benchmark suite: {suite}")
+                except Exception as exc:
+                    latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+                    result = EvalCaseResult(
+                        case_id=str(case["case_id"]),
+                        suite=suite,  # type: ignore[arg-type]
+                        prompt=prompt,
+                        passed=False,
+                        expected_summary=str(case["expected_summary"]),
+                        actual_summary=f"Exception: {exc}",
+                        tools_called=[],
+                        latency_ms=latency_ms,
+                        reason=f"FAIL: виняток під час виконання: {exc}",
                     )
-                elif suite == "tool":
-                    result = _evaluate_tool_case(case, response, latency_ms)
-                else:
-                    raise ValueError(f"Unsupported benchmark suite: {suite}")
-            except Exception as exc:
-                latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
-                result = EvalCaseResult(
-                    case_id=str(case["case_id"]),
-                    suite=suite,  # type: ignore[arg-type]
-                    prompt=prompt,
-                    passed=False,
-                    expected_summary=str(case["expected_summary"]),
-                    actual_summary=f"Exception: {exc}",
-                    tools_called=[],
-                    latency_ms=latency_ms,
-                    reason=f"FAIL: виняток під час виконання: {exc}",
-                )
-            case_results.append(result)
+                case_results.append(result)
 
     total_cases = len(case_results)
     passed_cases = sum(1 for item in case_results if item.passed)

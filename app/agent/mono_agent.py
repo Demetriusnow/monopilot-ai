@@ -75,6 +75,21 @@ _TRANSIENT_ERROR_MARKERS: tuple[str, ...] = (
 )
 
 
+_MODEL_COOLDOWN_SEC = 90.0
+_MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
+
+
+def _should_cooldown_model(exc: Exception) -> bool:
+    """Return True for hard timeouts, 404 model-not-found, or 503 overload (excluding short 429 RPM bursts)."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code == 429:
+        return False
+    combined = f"{type(exc).__name__} {exc}".lower()
+    if "429" in combined or "ratelimit" in combined or "resource_exhausted" in combined:
+        return False
+    return True
+
+
 def _is_missing_api_key(api_key: str) -> bool:
     """Return True when Gemini API key is absent or still set to a template placeholder."""
     normalized = api_key.strip().strip("\"'").strip()
@@ -365,6 +380,7 @@ class MonoPilotAgent:
     ) -> tuple[Any, int, str]:
         """Call Gemini Interactions API and fail over across candidate models on transient errors."""
         last_exc: Exception | None = None
+        is_live_network = self._client is None
         for idx in range(active_idx, len(candidate_models)):
             current_model = candidate_models[idx]
             payload_history = _strip_thought_steps(history) if idx > active_idx else history
@@ -377,10 +393,53 @@ class MonoPilotAgent:
                     input=payload_history,
                     tools=TOOL_DECLARATIONS,
                 )
+                if is_live_network:
+                    _MODEL_COOLDOWN_UNTIL.pop(current_model, None)
                 return interaction, idx, current_model
             except Exception as exc:
                 last_exc = exc
+                err_lower = f"{type(exc).__name__} {exc}".lower()
+                if "thought_signature" in err_lower and any(
+                    isinstance(s, dict) and s.get("type") == "function_result" for s in payload_history
+                ):
+                    grounded_facts = [
+                        s for s in payload_history if isinstance(s, dict) and s.get("type") == "function_result"
+                    ]
+                    user_turns = [
+                        s for s in payload_history if isinstance(s, dict) and s.get("type") == "user_input"
+                    ]
+                    synth_history = [
+                        *user_turns[-1:],
+                        {
+                            "type": "user_input",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "Нижче наведено точні результати вже виконаних інструментів по виписці. "
+                                        "Сформулюй чітку фінальну відповідь користувачу на основі цих даних:\n"
+                                        + json.dumps(grounded_facts, ensure_ascii=False, default=str)
+                                    ),
+                                }
+                            ],
+                        },
+                    ]
+                    try:
+                        interaction = await asyncio.to_thread(
+                            client.interactions.create,
+                            model=current_model,
+                            store=False,
+                            system_instruction=system_prompt,
+                            input=synth_history,
+                        )
+                        return interaction, idx, current_model
+                    except Exception as synth_exc:
+                        last_exc = synth_exc
+                        exc = synth_exc
+
                 if idx + 1 < len(candidate_models) and _is_transient_gemini_error(exc):
+                    if is_live_network and _should_cooldown_model(exc):
+                        _MODEL_COOLDOWN_UNTIL[current_model] = time.monotonic() + _MODEL_COOLDOWN_SEC
                     logger.warning(
                         "Gemini model '%s' transient error (%s); failing over to '%s'.",
                         current_model,
@@ -429,7 +488,14 @@ class MonoPilotAgent:
         started = time.perf_counter()
         tool_traces: list[ToolTrace] = []
         active_mode = await self._get_active_mode()
-        candidate_models = [self.model, *self.fallback_models]
+        raw_candidates = [self.model, *self.fallback_models]
+        if self._client is None and len(raw_candidates) > 1:
+            now_mono = time.monotonic()
+            healthy = [m for m in raw_candidates if now_mono >= _MODEL_COOLDOWN_UNTIL.get(m, 0.0)]
+            cooled = [m for m in raw_candidates if now_mono < _MODEL_COOLDOWN_UNTIL.get(m, 0.0)]
+            candidate_models = healthy + cooled if healthy else raw_candidates
+        else:
+            candidate_models = raw_candidates
         active_model_idx = 0
         active_model_name = candidate_models[0]
         retry_attempts = 1 if len(candidate_models) > 1 else 2

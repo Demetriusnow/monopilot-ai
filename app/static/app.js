@@ -2194,19 +2194,28 @@
     if (metaEl) metaEl.textContent = "Завантаження останнього звіту...";
     try {
       const report = await apiRequest("/api/evals/latest");
+      if (!report) {
+        await runEvalsBenchmark("deterministic", { silentToast: true });
+        return;
+      }
       renderEvalReport(report);
     } catch (err) {
       if (metaEl) metaEl.textContent = `Помилка завантаження: ${err.message}`;
     }
   }
 
-  async function runEvalsBenchmark(mode = "deterministic") {
+  async function runEvalsBenchmark(mode = "deterministic", { silentToast = false } = {}) {
     const detBtn = $("run-evals-btn");
     const liveBtn = $("run-evals-live-btn");
     const metaEl = $("eval-run-meta");
     if (detBtn) detBtn.disabled = true;
     if (liveBtn) liveBtn.disabled = true;
-    if (metaEl) metaEl.textContent = `Виконання 20 тест-кейсів (${mode})...`;
+    if (metaEl) {
+      metaEl.textContent =
+        mode === "live"
+          ? "Виконання 20 тест-кейсів на живому Gemini API (~6–12 сек)..."
+          : "Виконання 20 контрольних тест-кейсів...";
+    }
 
     try {
       const headers = buildOptionalGeminiHeaders();
@@ -2215,13 +2224,15 @@
         headers,
       });
       renderEvalReport(report);
-      showToast(
-        `Benchmark завершено: ${report.passed_cases}/${report.total_cases} тестів пройдено`,
-        report.passed_cases === report.total_cases ? "ok" : "err"
-      );
+      if (!silentToast) {
+        showToast(
+          `Перевірку завершено (${mode}): ${report.passed_cases}/${report.total_cases} сценаріїв пройдено`,
+          report.passed_cases === report.total_cases ? "ok" : "err"
+        );
+      }
     } catch (err) {
       if (metaEl) metaEl.textContent = `Помилка запуску: ${err.message}`;
-      showToast(`Eval Lab помилка: ${err.message}`, "err");
+      showToast(`Помилка тестів якості: ${err.message}`, "err");
     } finally {
       if (detBtn) detBtn.disabled = false;
       if (liveBtn) liveBtn.disabled = false;

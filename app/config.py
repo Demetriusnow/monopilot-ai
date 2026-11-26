@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     )
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"
-    gemini_fallback_models: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
-    gemini_timeout_ms: int = 30000
+    gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_fallback_models: str = "gemini-3.1-flash-lite,gemini-3.8-flash"
+    gemini_timeout_ms: int = 12000
     monobank_token: str = ""
     database_path: str = str(BASE_DIR / "monopilot.db")
     app_host: str = "127.0.0.1"
